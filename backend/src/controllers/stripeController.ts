@@ -7,7 +7,13 @@ import { Entitlement } from '../models/hosting.index';
 import type { PlanTier } from '../models/Entitlement';
 import { AuthRequest } from '../middleware/auth';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+// Guarded init: Stripe billing is optional (e.g. standalone deploys without
+// STRIPE_SECRET_KEY). Constructing without a key throws at import and crashes
+// the whole server, so only instantiate when the key is present. Billing
+// endpoints will no-op/error if called without it.
+const stripe = process.env.STRIPE_SECRET_KEY
+  ? new Stripe(process.env.STRIPE_SECRET_KEY)
+  : (null as unknown as Stripe);
 
 // Plan limits configuration
 const PLAN_LIMITS = {
