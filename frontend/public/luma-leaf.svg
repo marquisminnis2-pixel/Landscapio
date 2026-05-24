@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <path d="M48 12C24 18 18 32 14 48l4 2 2-5c1 .4 2 .6 3 .6C42 45.6 52 8 52 8c-2 4-16 4.5-26 6.5S8 25 8 29s3.5 7.5 3.5 7.5C18 12 48 12 48 12z" fill="#2d5016"/>
+  <path d="M48 12C24 18 18 32 14 48l4 2 2-5c1 .4 2 .6 3 .6C42 45.6 52 8 52 8c-2 4-16 4.5-26 6.5S8 25 8 29s3.5 7.5 3.5 7.5C18 12 48 12 48 12z" fill="url(#leaf-gradient)" opacity="0.6"/>
+  <defs>
+    <linearGradient id="leaf-gradient" x1="8" y1="8" x2="52" y2="48" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6b8f3e"/>
+      <stop offset="100%" stop-color="#2d5016"/>
+    </linearGradient>
+  </defs>
+</svg>

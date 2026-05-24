@@ -1,0 +1,344 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== Theme Variables ===== */
+:root {
+  --canvas-bg: #f5f5f5;
+  --panel-bg: #ffffff;
+  --border-color: #e5e5e5;
+  --text-primary: #000000;
+  --text-secondary: #666666;
+  --accent-blue: #4a7c2f;
+  --input-bg: #ffffff;
+  --scrollbar-track: #f5f5f5;
+  --shadow-color: rgba(0, 0, 0, 0.3);
+  transition: background-color 0.3s, color 0.3s, border-color 0.3s;
+}
+
+:root.dark-mode {
+  --canvas-bg: #0d1a0d;
+  --panel-bg: #111f11;
+  --border-color: rgba(74, 124, 47, 0.12);
+  --text-primary: #f0f4ee;
+  --text-secondary: #9ab897;
+  --accent-blue: #4a7c2f;
+  --input-bg: #142014;
+  --scrollbar-track: #0d1a0d;
+  --shadow-color: rgba(0, 0, 0, 0.7);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #4a7c2f;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #6b8f3e;
+}
+
+/* Accent scrollbar for dashboard pages */
+.accent-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.accent-scrollbar::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.accent-scrollbar::-webkit-scrollbar-thumb {
+  background: #4a7c2f;
+  border-radius: 4px;
+}
+
+.accent-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #8b5e3c;
+}
+
+/* Selection styles - Single source of truth visualization */
+.selected-element {
+  outline: 2px solid #4a7c2f !important;
+  outline-offset: -2px;
+  position: relative;
+  z-index: 10 !important;
+}
+
+.selected-element::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-color: rgba(74, 124, 47, 0.08);
+  pointer-events: none;
+}
+
+.hovered-element {
+  outline: 1px solid rgba(74, 124, 47, 0.6) !important;
+  outline-offset: -1px;
+}
+
+/* Editable element styles */
+.editable-element {
+  cursor: text !important;
+}
+
+.editable-element:focus {
+  outline: 2px solid #3b82f6 !important;
+  outline-offset: 2px;
+  background-color: rgba(59, 130, 246, 0.05);
+}
+
+.selected-element.editable-element::after {
+  content: 'Double-click to edit';
+  position: absolute;
+  top: -24px;
+  left: 0;
+  font-size: 10px;
+  background: #4a7c2f;
+  color: #f0f4ee;
+  padding: 2px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 100;
+}
+
+.editing-element::after {
+  display: none !important;
+}
+
+/* Canvas element styles */
+.canvas-element {
+  position: relative;
+  min-height: 20px;
+  min-width: 20px;
+  transition: outline 0.1s ease;
+  /* Ensure all canvas elements can receive clicks */
+  pointer-events: auto !important;
+}
+
+.canvas-element:hover {
+  cursor: pointer;
+}
+
+/* Ensure inline elements inside canvas elements don't block clicks */
+.canvas-element * {
+  pointer-events: auto !important;
+}
+
+/* Prevent text selection during drag */
+.dragging {
+  user-select: none;
+}
+
+/* Input styles */
+input, select, textarea {
+  background-color: var(--input-bg);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  padding: 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.875rem;
+  transition: background-color 0.3s, border-color 0.3s, color 0.3s;
+}
+
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: #4a7c2f;
+}
+
+button {
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+button:hover {
+  opacity: 0.9;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ===== Builder Panel Effects (dark mode) ===== */
+
+/* Subtle grid on panels */
+:root.dark-mode .builder-panel {
+  background-image:
+    linear-gradient(rgba(74, 124, 47, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(74, 124, 47, 0.025) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Panel header glow */
+:root.dark-mode .builder-panel-header {
+  box-shadow: 0 1px 0 rgba(74, 124, 47, 0.1), inset 0 -1px 0 rgba(74, 124, 47, 0.06);
+}
+
+/* Panel header top accent line */
+:root.dark-mode .builder-panel-header::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(74, 124, 47, 0.4), rgba(139, 94, 60, 0.4), transparent);
+  pointer-events: none;
+}
+
+/* Active tab glow */
+:root.dark-mode .builder-tab-active {
+  text-shadow: 0 0 8px rgba(74, 124, 47, 0.5);
+}
+
+/* ===== Dashboard Sparkle/Shimmer Animations ===== */
+
+/* Sweeping shimmer streaks */
+@keyframes shimmer-1 {
+  0% { transform: translateX(0); opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { transform: translateX(calc(100vw + 300px)); opacity: 0; }
+}
+
+@keyframes shimmer-2 {
+  0% { transform: translateX(0); opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { transform: translateX(calc(100vw + 400px)); opacity: 0; }
+}
+
+@keyframes shimmer-3 {
+  0% { transform: translateX(0); opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { transform: translateX(calc(100vw + 250px)); opacity: 0; }
+}
+
+/* Twinkling sparkle dots */
+@keyframes sparkle {
+  0%, 100% { opacity: 0; transform: scale(0.5); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+.animate-shimmer-1 {
+  animation: shimmer-1 8s ease-in-out infinite;
+  animation-delay: 0s;
+}
+
+.animate-shimmer-2 {
+  animation: shimmer-2 12s ease-in-out infinite;
+  animation-delay: 3s;
+}
+
+.animate-shimmer-3 {
+  animation: shimmer-3 10s ease-in-out infinite;
+  animation-delay: 6s;
+}
+
+.animate-sparkle-1 {
+  animation: sparkle 3s ease-in-out infinite;
+  animation-delay: 0s;
+}
+
+.animate-sparkle-2 {
+  animation: sparkle 4s ease-in-out infinite;
+  animation-delay: 1.5s;
+}
+
+.animate-sparkle-3 {
+  animation: sparkle 3.5s ease-in-out infinite;
+  animation-delay: 0.8s;
+}
+
+.animate-sparkle-4 {
+  animation: sparkle 5s ease-in-out infinite;
+  animation-delay: 2.2s;
+}
+
+.animate-sparkle-5 {
+  animation: sparkle 4.5s ease-in-out infinite;
+  animation-delay: 3.5s;
+}
+
+.animate-sparkle-6 {
+  animation: sparkle 3.8s ease-in-out infinite;
+  animation-delay: 1s;
+}
+
+.animate-sparkle-7 {
+  animation: sparkle 4.2s ease-in-out infinite;
+  animation-delay: 2.8s;
+}
+
+.animate-sparkle-8 {
+  animation: sparkle 3.2s ease-in-out infinite;
+  animation-delay: 4s;
+}
+
+/* ===== Mobile Responsiveness ===== */
+@media (max-width: 768px) {
+  /* Tool page sidebars — stack vertically on mobile */
+  aside[style*="width: 300"], aside[style*="width: 280"],
+  aside[style*="width: 256"], aside[style*="width: 340"],
+  aside[style*="minWidth: 300"], aside[style*="minWidth: 280"] {
+    position: fixed !important;
+    top: 56px !important;
+    left: 0 !important;
+    bottom: 0 !important;
+    z-index: 50 !important;
+    width: 85vw !important;
+    min-width: 85vw !important;
+    max-width: 320px !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-shimmer-1,
+  .animate-shimmer-2,
+  .animate-shimmer-3,
+  .animate-sparkle-1,
+  .animate-sparkle-2,
+  .animate-sparkle-3,
+  .animate-sparkle-4,
+  .animate-sparkle-5,
+  .animate-sparkle-6,
+  .animate-sparkle-7,
+  .animate-sparkle-8 {
+    animation: none;
+  }
+}
