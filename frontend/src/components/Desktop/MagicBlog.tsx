@@ -80,40 +80,299 @@ function parseLinksFromText(text: string): Array<{ href: string; text: string }>
 
 interface SecondaryKeyword { id: number; keyword: string; }
 
-function buildBlogKeywordsContext(primaryKeyword: string, secondaryKeywords: SecondaryKeyword[]): string {
-  if (!primaryKeyword && secondaryKeywords.length === 0) return '';
-  const keywordStrings = secondaryKeywords.map(k => k.keyword);
-  return `KEYWORDS TO USE:
-Primary Keyword (use exactly 3 times — once in the opening, twice in the body):
-  ${primaryKeyword || 'None — use landscaping service + city combination instead.'}
+// ─── SEO Checklist v2 helpers ─────────────────────────────────────────────────
+// Fixed keyword-count model: PK 1×H1 + 1×body = 2 total; each SK 1×body.
+const PK_H1_TARGET = 1;
+const PK_BODY_TARGET = 1;
+const PK_TOTAL_TARGET = PK_H1_TARGET + PK_BODY_TARGET;
+const SK_BODY_TARGET = 1;
 
-Secondary Keywords (use each exactly 2 times, spread across different sections):
-${keywordStrings.length > 0 ? keywordStrings.map(k => `  - ${k}`).join('\n') : '  None provided'}
-
-KEYWORD FREQUENCY TARGETS (hard targets — a code-level validator checks counts after generation and will request a rewrite if off):
-- Primary keyword: exactly 3 times
-- Each secondary keyword: exactly 2 times
-- Spread occurrences across different sections — never cluster in one paragraph
-- All keyword usage must read naturally — the rewrite loop will fix counts if off`.trim();
+// "in" is the only stop word — ignored when matching. "for" is NOT a stop word.
+function seoNormalize(s: string): string {
+  return (s || '').toLowerCase().replace(/\s+\bin\b\s+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function seoEscape(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+function seoCountKeyword(text: string, kw: string): number {
+  const nKw = seoNormalize(kw);
+  if (!nKw) return 0;
+  const nText = seoNormalize(text);
+  return (nText.match(new RegExp(`(?<![a-z])${seoEscape(nKw)}(?![a-z])`, 'g')) || []).length;
+}
+function seoIsSubstring(inner: string, outer: string): boolean {
+  const ni = seoNormalize(inner), no = seoNormalize(outer);
+  if (!ni || !no || ni === no) return false;
+  return new RegExp(`(?<![a-z])${seoEscape(ni)}(?![a-z])`).test(no);
+}
+function seoVisibleText(md: string): string {
+  return (md || '')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+    .replace(/https?:\/\/[^\s)]+/g, ' ');
+}
+function seoStripMeta(text: string): string {
+  return (text || '').split('\n').filter(l => !/^\s*meta\s*(title|description)\s*[:\-]/i.test(l)).join('\n');
+}
+function seoExtractAnchors(md: string): { text: string; url: string }[] {
+  const out: { text: string; url: string }[] = [];
+  const re = /\[([^\]]+)\]\(([^)]+)\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(md || '')) !== null) out.push({ text: m[1], url: m[2] });
+  return out;
+}
+interface SeoSections { h1: string; subheadings: string; body: string; }
+function seoSplitSections(md: string): SeoSections {
+  const h1: string[] = [], subs: string[] = [], body: string[] = [];
+  for (const line of (md || '').split('\n')) {
+    const m = line.match(/^(#{1,6})\s+(.*)$/);
+    if (m) {
+      const level = m[1].length;
+      if (level === 1) h1.push(m[2]);
+      else if (level >= 2 && level <= 4) subs.push(m[2]);
+      else body.push(m[2]);
+    } else { body.push(line); }
+  }
+  return { h1: h1.join('\n'), subheadings: subs.join('\n'), body: body.join('\n') };
+}
+interface SeoKwReport {
+  pkH1: number; pkBody: number; pkSub: number;
+  secondaries: { keyword: string; presence: number; standalone: number; inSub: number; inAnchor: number; coveredBy: string[] }[];
+}
+function seoAnalyzeKeywords(blogText: string, pk: string, secondaries: string[]): SeoKwReport {
+  const sec = (secondaries || []).map(s => s.trim()).filter(Boolean);
+  const all = [pk, ...sec].filter(Boolean);
+  const S = seoSplitSections(blogText);
+  const h1V = seoVisibleText(S.h1);
+  const bodyV = seoVisibleText(seoStripMeta(S.body));
+  const subV = seoVisibleText(S.subheadings);
+  const anchors = seoExtractAnchors(blogText).map(a => seoNormalize(a.text));
+  const independent = (text: string, kw: string): number => {
+    let c = seoCountKeyword(text, kw);
+    for (const other of all) {
+      if (other === kw) continue;
+      if (seoIsSubstring(kw, other)) c -= seoCountKeyword(text, other);
+    }
+    return Math.max(0, c);
+  };
+  const pkH1 = pk ? independent(h1V, pk) : 0;
+  const pkBody = pk ? independent(bodyV, pk) : 0;
+  const pkSub = pk ? seoCountKeyword(subV, pk) : 0;
+  const secondariesOut = sec.map(sk => {
+    const standalone = independent(bodyV, sk);
+    const coveredBy: string[] = [];
+    let credit = 0;
+    for (const sup of all) {
+      if (sup === sk) continue;
+      if (seoIsSubstring(sk, sup)) {
+        const sc = seoCountKeyword(bodyV, sup);
+        if (sc > 0) { credit += sc; coveredBy.push(sup); }
+      }
+    }
+    const nSk = seoNormalize(sk);
+    const inAnchor = anchors.filter(a => new RegExp(`(?<![a-z])${seoEscape(nSk)}(?![a-z])`).test(a)).length;
+    return { keyword: sk, presence: standalone + credit, standalone, inSub: seoCountKeyword(subV, sk), inAnchor, coveredBy };
+  });
+  return { pkH1, pkBody, pkSub, secondaries: secondariesOut };
+}
+function seoHeadingIssues(blogText: string, pk: string, secondaries: string[]): string[] {
+  const issues: string[] = [];
+  const all = [pk, ...secondaries].filter(Boolean);
+  for (const line of (blogText || '').split('\n')) {
+    const m = line.match(/^(#{1,6})\s+(.*)$/);
+    if (!m) continue;
+    const level = m[1].length;
+    const text = m[2];
+    const plain = text.replace(/\*\*/g, '').trim();
+    if (/\*\*/.test(text)) issues.push(`Heading "${plain}" contains bold (**) — strip all ** markers from headings.`);
+    const firstAlpha = plain.replace(/^[^A-Za-z]*/, '');
+    if (firstAlpha && /^[a-z]/.test(firstAlpha)) issues.push(`Heading "${plain}" must start with a capital letter.`);
+    if (level >= 2 && level <= 4) {
+      for (const kw of all) {
+        if (kw && seoCountKeyword(seoVisibleText(text), kw)) {
+          issues.push(`Subheading "${plain}" contains the keyword "${kw}" — replace it with a natural synonym (never another keyword from the list).`);
+        }
+      }
+    }
+    if (level === 1 && pk && new RegExp(`^${seoEscape(seoNormalize(pk))}\\b`).test(seoNormalize(seoVisibleText(text)))) {
+      issues.push(`H1 leads with the primary keyword "${pk}" verbatim — integrate it naturally with an angle modifier instead of forcing it at the front.`);
+    }
+  }
+  return issues;
+}
+function seoFormatIssues(blogText: string, pk: string, secondaries: string[]): string[] {
+  const issues: string[] = [];
+  const all = [pk, ...secondaries].filter(Boolean);
+  if (/[^\s—]—|—[^\s—]/.test(blogText)) issues.push('Some em-dashes (—) lack a space — every "—" must have a space on both sides.');
+  if (/&nbsp;/i.test(blogText)) issues.push('Remove all non-breaking spaces (&nbsp;), especially around keywords.');
+  const lower = (blogText || '').toLowerCase().replace(/\n/g, ' ');
+  for (const kw of all) {
+    const e = seoEscape(kw.toLowerCase());
+    if (new RegExp(`\\*\\*[^*]*${e}[^*]*\\*\\*`).test(lower) || new RegExp(`(?<!\\*)\\*[^*]+${e}[^*]+\\*(?!\\*)`).test(lower)) {
+      issues.push(`The keyword "${kw}" is bold or italicized somewhere — keyword occurrences must never be bold or italic.`);
+    }
+  }
+  return issues;
+}
+function seoLinkIssues(blogText: string, siteUrl: string, keywords: string[]): string[] {
+  const issues: string[] = [];
+  const links = seoExtractAnchors(blogText);
+  const isInternal = (url: string) => url.startsWith('/') || url.includes(siteUrl);
+  const internal = links.filter(l => isInternal(l.url));
+  const external = links.filter(l => !isInternal(l.url) && /^https?:\/\//i.test(l.url));
+  if (internal.length !== 2) {
+    issues.push(internal.length < 2
+      ? `Only ${internal.length} internal link(s) — there must be exactly 2: IL1 to the assigned service page and IL2 to the homepage (https://${siteUrl}). Add the missing one with a natural, descriptive anchor.`
+      : `${internal.length} internal links — prune to exactly 2 (IL1 service page + IL2 homepage). When removing an excess link, keep the surrounding text but unlink it; if the released text is a keyword, swap in a synonym.`);
+  }
+  const hasHome = internal.some(l => {
+    try { return new URL(l.url.startsWith('http') ? l.url : `https://${siteUrl}${l.url}`).pathname.replace(/\/$/, '') === ''; } catch { return false; }
+  });
+  if (internal.length >= 1 && !hasHome) issues.push(`Internal Link 2 must point to the homepage (https://${siteUrl}).`);
+  if (external.length !== 2) {
+    issues.push(external.length < 2
+      ? `Only ${external.length} external link(s) — there must be exactly 2 to authoritative, relevant sources (link to specific pages, not site homepages). Add the missing one.`
+      : `${external.length} external links — reduce to exactly 2 authoritative sources.`);
+  }
+  for (const l of external) {
+    if (/\s/.test(l.url) || !/^https?:\/\/[^\s]+\.[^\s]/.test(l.url)) {
+      issues.push(`External URL "${l.url}" looks broken — replace it with a real, working authoritative URL (do not delete it, or the external-link count drops below 2).`);
+    }
+  }
+  for (const l of links) {
+    if (/^\s*(click here|learn more|read more|here|this)\s*$/i.test(l.text)) {
+      issues.push(`Anchor "${l.text}" is a generic CTA — rewrite it to describe the destination.`);
+    }
+    for (const kw of keywords) {
+      if (kw && seoCountKeyword(l.text, kw)) {
+        issues.push(`Link anchor "${l.text}" uses the keyword "${kw}" — change the visible anchor text to a natural descriptive synonym (keep the URL), and make sure "${kw}" still appears the required number of times in the body prose.`);
+        break;
+      }
+    }
+  }
+  return issues;
+}
+function seoMetaIssues(blogText: string, pk: string): string[] {
+  const issues: string[] = [];
+  const descM = blogText.match(/meta\s*description\s*[:\-]\s*(.+)/i);
+  if (descM) {
+    const desc = descM[1].replace(/^["'""']+|["'""']+$/g, '').replace(/\s+$/, '').trim();
+    if (desc.length < 150 || desc.length > 160) issues.push(`Meta description is ${desc.length} characters — it must be 150–160 (strip trailing whitespace before measuring).`);
+    const pkc = pk ? seoCountKeyword(desc, pk) : 0;
+    if (pk && pkc !== 1) issues.push(`Meta description must include the primary keyword exactly 1× (currently ${pkc}×).`);
+    if (/\?\s*$/.test(desc)) issues.push('Meta description must be declarative — it currently reads as a question.');
+  } else {
+    issues.push('Add a "Meta Description:" line — 150–160 characters, declarative, primary keyword exactly 1×, unique vs. the parent service page.');
+  }
+  const titleM = blogText.match(/meta\s*title\s*[:\-]\s*(.+)/i);
+  if (titleM) {
+    const title = titleM[1].replace(/^["'""']+|["'""']+$/g, '').trim();
+    if (title.length >= 60) issues.push(`Meta title is ${title.length} characters — keep it under 60.`);
+    if (pk && seoCountKeyword(title, pk) < 1) issues.push('Meta title must include the primary keyword + an angle modifier.');
+  } else {
+    issues.push('Add a "Meta Title:" line — under 60 characters, primary keyword + an angle modifier, unique vs. the parent service page.');
+  }
+  return issues;
 }
 
-function buildLinksContext(internalLinks: LinkEntry[], externalLinks: LinkEntry[]): string {
-  const validInternal = internalLinks.filter((l) => l.url.trim() !== '');
-  const validExternal = externalLinks.filter((l) => l.url.trim() !== '');
+function extractUrl(raw: string): string {
+  if (!raw) return '';
+  const m = raw.match(/https?:\/\/[^\s)\]]+/);
+  if (m) return m[0].replace(/[.,;:)]+$/, '');
+  const rel = raw.trim();
+  if (rel.startsWith('/')) return rel;
+  return '';
+}
+function extractLabel(raw: string, url: string): string {
+  if (!raw || !url) return '';
+  const idx = raw.indexOf(url);
+  if (idx <= 0) return '';
+  return raw.slice(0, idx).replace(/[\s—\-:|]+$/, '').trim();
+}
 
-  const internalList = validInternal.length
-    ? validInternal.map((l, i) => `  ${i + 1}. URL: ${l.url}${l.label ? ` | Label: ${l.label}` : ''}`).join('\n')
-    : '  None provided.';
+const brandSiteUrl = 'landscapio.co';
+
+function buildBlogKeywordsContext(primaryKeyword: string, secondaryKeywords: SecondaryKeyword[], _pkTarget: number, _skTarget: number): string {
+  const pk = (primaryKeyword || '').trim();
+  const sks = secondaryKeywords.map(k => k.keyword.trim()).filter(Boolean);
+  if (!pk && sks.length === 0) return '';
+  const sk1 = sks[0] || '';
+  const sk2 = sks[1] || '';
+
+  const overlapNotes: string[] = [];
+  for (const sk of sks) {
+    if (pk && seoIsSubstring(pk, sk)) overlapNotes.push(`• "${pk}" (PK) is INSIDE "${sk}" — an occurrence of "${sk}" does NOT satisfy the PK. Place a separate standalone "${pk}" in the body (Rule A).`);
+    if (pk && seoIsSubstring(sk, pk)) overlapNotes.push(`• "${sk}" is INSIDE "${pk}" (PK) — the PK body mention already covers "${sk}". Do NOT add a separate "${sk}" (Rule B).`);
+  }
+  if (sk1 && sk2 && seoIsSubstring(sk1, sk2)) overlapNotes.push(`• "${sk1}" (SK1) is INSIDE "${sk2}" (SK2) — one "${sk2}" covers "${sk1}". Do NOT add a separate "${sk1}" (Rule C).`);
+  if (sk1 && sk2 && seoIsSubstring(sk2, sk1)) overlapNotes.push(`• "${sk2}" (SK2) is INSIDE "${sk1}" (SK1) — one "${sk1}" covers "${sk2}". Do NOT add a separate "${sk2}" (Rule C).`);
+
+  return `KEYWORDS — EXACT PLACEMENT (SEO Checklist v2, fixed counts — NOT density-based):
+
+PRIMARY KEYWORD (PK): "${pk || 'None provided'}"
+  • Exactly 1× in the H1 — integrated naturally with an angle modifier. Never jam the exact phrase at the front like a label; rearrange the words if it reads better.
+  • Exactly 1× in the body — a standalone phrase inside a paragraph. Never in a subheading.
+
+SECONDARY KEYWORDS (each exactly 1× in the BODY only, never in a subheading):
+${sks.length ? sks.map((k, i) => `  SK${i + 1}. "${k}"`).join('\n') : '  None provided.'}
+
+TOTAL keyword mentions across the whole blog must equal exactly ${2 + sks.length}${sks.length === 2 ? ' (PK×2 + SK1×1 + SK2×1 = 4)' : ''}.
+
+STOP-WORD RULE: "in" is ignored when matching keywords ("Landscaping Services in Dallas" = "Landscaping Services Dallas"). "for" is NOT a stop word.
+${overlapNotes.length ? `\nSUBSTRING / OVERLAP RULES that apply here:\n${overlapNotes.join('\n')}\n` : ''}
+HARD KEYWORD RULES:
+- No keyword (PK/SK1/SK2) in ANY subheading (H2/H3/H4) — use a descriptive synonym, and never reuse another keyword from the list as the synonym.
+- No keyword in image alt text. Never bold or italicize any keyword occurrence.
+- Never use a keyword as link anchor text — use natural, descriptive anchors instead.
+
+META (output these two labelled lines at the very top, before the H1):
+- Meta Title: under 60 characters, includes the primary keyword + an angle modifier, unique vs. the parent service page.
+- Meta Description: exactly 150–160 characters, declarative (not a question, not a keyword list), includes the primary keyword exactly 1×, unique vs. the parent service page.
+
+HEADINGS, FORMATTING & LENGTH:
+- H1 holds the PK once (natural + angle modifier). Capitalize the first word of every heading. No bold (**) inside any heading.
+- Em-dashes (—) get a space on both sides. No non-breaking spaces (&nbsp;). Put a blank line between every paragraph and every bullet/list item.
+- Do not exceed the parent service page's word count — keep the blog concise and focused.`.trim();
+}
+
+function buildLinksContext(internalLinks: LinkEntry[], externalLinks: LinkEntry[], siteUrl: string): string {
+  const validInternal = internalLinks
+    .map((l) => extractUrl(l.url))
+    .filter((u) => u !== '');
+  const validExternal = externalLinks
+    .map((l) => ({ url: extractUrl(l.url), label: extractLabel(l.url, extractUrl(l.url)) || l.label || '' }))
+    .filter((l) => l.url !== '');
+
+  const homepage = `https://${siteUrl}`;
+  const il1 = validInternal.find((u) => {
+    try { return new URL(u.startsWith('http') ? u : `https://${siteUrl}${u.startsWith('/') ? u : '/' + u}`).pathname.replace(/\/$/, '') !== ''; }
+    catch { return true; }
+  }) || validInternal[0] || '';
+  const il1Full = il1 ? (il1.startsWith('http') ? il1 : `https://${siteUrl}${il1.startsWith('/') ? il1 : '/' + il1}`) : '';
 
   const externalList = validExternal.length
-    ? validExternal.map((l, i) => `  ${i + 1}. URL: ${l.url}${l.label ? ` | Source: ${l.label}` : ''}`).join('\n')
-    : '  None provided — include 1–2 relevant authoritative landscaping sources on your own.';
+    ? validExternal.slice(0, 2).map((l, i) => `  EL${i + 1}. ${l.url}${l.label ? ` (${l.label})` : ''}`).join('\n')
+    : '  None provided — add 2 authoritative, relevant sources (industry publications, government sites, recognized tools, research studies). Link to specific pages, never to Google.com or a Wikipedia homepage.';
 
-  return `INTERNAL LINKS TO USE (use all of these, spread throughout the blog with varied anchor text):
-${internalList}
+  return `LINKS — EXACTLY 2 INTERNAL + EXACTLY 2 EXTERNAL (no more, no fewer):
 
-EXTERNAL LINKS TO USE (include these naturally as authoritative references):
-${externalList}`;
+INTERNAL LINK 1 (IL1) → assigned service page: ${il1Full || '(not provided)'}
+INTERNAL LINK 2 (IL2) → homepage: ${homepage}
+
+EXTERNAL LINKS (exactly 2, authoritative & relevant):
+${externalList}
+
+EXTERNAL LINK STYLE — INVISIBLE CITATIONS:
+- Weave every external link into existing sentence text naturally. The reader must not be able to tell a citation is happening — the link should feel like part of the writing, not a reference.
+- NEVER introduce a link with "According to [source]", "In a study by [source]", "As noted by [source]", or any similar source-attribution phrasing.
+- The anchor text must be words already natural to the sentence — never the name of the publication or organization.
+  Bad: "According to Lawn & Landscape Magazine, professional lawn care improves property values."
+  Good: "Investing in professional lawn care has become one of the [most reliable ways](url) for homeowners to boost curb appeal." (anchor = "most reliable ways")
+
+LINK ANCHOR RULES:
+- Anchor text must be natural and descriptive — describe what the reader will find or learn.
+- NEVER use a keyword (PK/SK1/SK2) as anchor text, and never use generic CTAs like "Click here" or "Learn more".
+- Format every link as markdown [descriptive anchor](url) and keep each URL exactly as given.
+- Do not add any internal or external links beyond these 4.`;
 }
 
 const MagicBlog = () => {
@@ -280,33 +539,22 @@ const MagicBlog = () => {
     if (newExternalLinks.length > 0) setExternalLinks(newExternalLinks);
     else setExternalLinks([{ id: 1, url: '', label: '' }]);
 
-    // Build the prompt
+    // Build content brief using SEO Checklist v2 helpers
+    const kwContext = pk ? buildBlogKeywordsContext(pk, newSecondary, PK_TOTAL_TARGET, SK_BODY_TARGET) : '';
+    const linksContext = buildLinksContext(newInternalLinks, newExternalLinks, brandSiteUrl);
+    const hasLinks = newInternalLinks.some(l => l.url.trim()) || newExternalLinks.some(l => l.url.trim());
+
     const promptParts = [
-      `You are writing a blog post for Landscapio, a landscaping services platform.`,
+      `CONTENT BRIEF`,
       ``,
-      `Blog Title: ${blogTitle}`,
-      pk ? `Primary Keyword: ${pk}` : null,
-      sk1 ? `Secondary Keyword 1: ${sk1}` : null,
-      sk2 ? `Secondary Keyword 2: ${sk2}` : null,
-      il1 ? `Internal Link 1: ${il1}` : null,
-      il2 ? `Internal Link 2: ${il2}` : null,
-      el1 ? `External Link 1: ${el1}` : null,
-      el2 ? `External Link 2: ${el2}` : null,
-      blogOutline.trim() ? `\nBlog Outline (follow this structure exactly):\n${blogOutline}` : null,
-      ``,
-      `Instructions:`,
-      blogOutline.trim() ? `- A Blog Outline is provided above — follow it exactly as the structure for the post` : `- No Blog Outline was provided — create your own logical structure based on the title and keywords`,
-      `- Use the primary keyword maximum 2 times`,
-      `- Use each secondary keyword maximum 2 times each`,
-      `- Include the internal links naturally within the content where relevant`,
-      `- Include the external links as supporting references`,
-      `- Use proper H1, H2, H3 heading structure`,
-      `- Write for landscaping companies and their potential customers`,
-      `- Aim for 1200-1800 words`,
-      `- Make it authoritative, informative, and conversion focused`,
-      `- Format all links as proper markdown links: [anchor text](url)`,
-      ``,
-      `Write the full article now.`,
+      `**Topic:** ${blogTitle}`,
+      pk ? `**Primary keyword:** ${pk}` : null,
+      newSecondary.length ? `**Secondary keywords:** ${newSecondary.map(k => k.keyword).join(', ')}` : null,
+      blogOutline.trim() ? `\n**REQUIRED H2 OUTLINE:**\n${blogOutline}` : null,
+      kwContext ? `\n${kwContext}` : null,
+      hasLinks ? `\n${linksContext}` : null,
+      hasLinks ? `\nLINKING INSTRUCTIONS:\n- Use ALL internal links provided. Spread them across the blog — do not cluster them together.\n- Use varied anchor text for every internal link. Never repeat the same anchor text twice.\n- Use ALL external links provided. Reference them naturally when citing facts, tips, or statistics.\n- Format all links as proper markdown links: [anchor text](url)` : null,
+      `\nWrite the full article now following the system prompt rules.`,
     ].filter(Boolean).join('\n');
 
     // Clear chat and start generation
@@ -461,50 +709,79 @@ META_DESCRIPTION: [description here]`;
     }
   }, [streamOnce]);
 
-  // ── Keyword density checker ────────────────────────────────────────────────
-  const countKeyword = (text: string, kw: string): number => {
-    if (!kw) return 0;
-    return (text.toLowerCase().match(new RegExp(kw.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-  };
-
-  const PK_TARGET = 3;
-  const SK_TARGET = 2;
-
-  type OffTarget = { keyword: string; count: number; target: number; direction: 'too_many' | 'too_few' };
-
-  const findOffTargetKeywords = (text: string, pkOverride?: string, sksOverride?: SecondaryKeyword[]): OffTarget[] => {
-    const pk = pkOverride ?? primaryKeywordRef.current;
-    const sks = sksOverride ?? secondaryKeywordsRef.current;
-    const out: OffTarget[] = [];
-    if (pk) {
-      const c = countKeyword(text, pk);
-      if (c !== PK_TARGET) out.push({ keyword: pk, count: c, target: PK_TARGET, direction: c > PK_TARGET ? 'too_many' : 'too_few' });
+  // ── SEO Checklist v2 — keyword validation (stop-word-aware, Rules A/B/C) ────
+  const findOffTargetKeywords = (text: string, primaryKw: string, secondaryKws: SecondaryKeyword[]): { keyword: string; count: number; target: number; direction: string }[] => {
+    const out: { keyword: string; count: number; target: number; direction: string }[] = [];
+    const report = seoAnalyzeKeywords(text, primaryKw, secondaryKws.map(k => k.keyword));
+    if (primaryKw) {
+      const pkTotal = report.pkH1 + report.pkBody;
+      if (report.pkH1 !== PK_H1_TARGET || report.pkBody !== PK_BODY_TARGET || report.pkSub > 0) {
+        out.push({ keyword: primaryKw, count: pkTotal, target: PK_TOTAL_TARGET, direction: pkTotal < PK_TOTAL_TARGET ? 'too_few' : 'too_many' });
+      }
     }
-    const seen = new Set<string>();
-    for (const sk of sks) {
-      if (!sk.keyword || seen.has(sk.keyword)) continue;
-      seen.add(sk.keyword);
-      const c = countKeyword(text, sk.keyword);
-      if (c !== SK_TARGET) out.push({ keyword: sk.keyword, count: c, target: SK_TARGET, direction: c > SK_TARGET ? 'too_many' : 'too_few' });
+    for (const r of report.secondaries) {
+      if (r.presence !== SK_BODY_TARGET || r.inSub > 0) {
+        out.push({ keyword: r.keyword, count: r.presence, target: SK_BODY_TARGET, direction: r.presence < SK_BODY_TARGET ? 'too_few' : 'too_many' });
+      }
     }
     return out;
   };
 
-  // ── Link coverage checker ──────────────────────────────────────────────────
-  // Returns URLs that were provided but not placed in the generated text.
-  const findMissingLinks = (text: string, urls: string[]): string[] => {
-    const missing: string[] = [];
-    for (const raw of urls) {
-      const url = raw.trim();
-      if (!url) continue;
-      let hostname = '';
-      try {
-        hostname = new URL(url.startsWith('http') ? url : 'https://' + url).hostname.replace(/^www\./, '');
-      } catch { continue; }
-      if (!hostname) continue;
-      if (!text.toLowerCase().includes(hostname.toLowerCase())) missing.push(url);
+  // ── 3-pass rewrite prompt — covers keywords, headings, links, meta, formatting ──
+  const buildRewritePrompt = (blogText: string, primaryKw: string, secondaryKws: SecondaryKeyword[], _internals: LinkEntry[], _externals: LinkEntry[]): string | null => {
+    const secStrings = secondaryKws.map(k => k.keyword.trim()).filter(Boolean);
+    const report = seoAnalyzeKeywords(blogText, primaryKw, secStrings);
+
+    const kwFixes: string[] = [];
+    if (primaryKw) {
+      if (report.pkH1 < PK_H1_TARGET) kwFixes.push(`Add the primary keyword "${primaryKw}" to the H1 exactly once, integrated naturally with an angle modifier (do not jam it at the front).`);
+      else if (report.pkH1 > PK_H1_TARGET) kwFixes.push(`The H1 mentions "${primaryKw}" ${report.pkH1}× — keep it exactly once.`);
+      if (report.pkBody < PK_BODY_TARGET) kwFixes.push(`Add exactly one standalone body mention of "${primaryKw}" inside a paragraph — it must stand on its own, not embedded inside a longer phrase (Rule A).`);
+      else if (report.pkBody > PK_BODY_TARGET) kwFixes.push(`The body mentions "${primaryKw}" ${report.pkBody}× — reduce to exactly 1 (replace extras with pronouns or natural synonyms, never another keyword from the list).`);
+      if (report.pkSub > 0) kwFixes.push(`"${primaryKw}" appears in a subheading — remove it there and use a descriptive synonym.`);
     }
-    return missing;
+    for (const r of report.secondaries) {
+      if (r.inSub > 0) kwFixes.push(`The keyword "${r.keyword}" appears in a subheading — replace it there with a natural synonym (never another keyword).`);
+      if (r.presence < SK_BODY_TARGET) {
+        kwFixes.push(`Add the secondary keyword "${r.keyword}" exactly once in the body, verbatim, in a natural sentence.`);
+      } else if (r.presence > SK_BODY_TARGET) {
+        if (r.coveredBy.length > 0) kwFixes.push(`"${r.keyword}" is already covered by "${r.coveredBy[0]}" and also appears on its own — remove the standalone occurrence(s) so it appears only once in total (replace with a synonym).`);
+        else if (r.inAnchor >= 2) kwFixes.push(`"${r.keyword}" is used as anchor text in two links — change ONE anchor's visible text to a natural synonym (keep its URL) so the keyword is used only once.`);
+        else kwFixes.push(`"${r.keyword}" appears ${r.presence}× — reduce to exactly 1 (replace extras with synonyms, never another keyword).`);
+      }
+    }
+
+    const headingFixes = seoHeadingIssues(blogText, primaryKw, secStrings);
+    const linkFixes = seoLinkIssues(blogText, brandSiteUrl, [primaryKw, ...secStrings].filter(Boolean));
+    const metaFixes = seoMetaIssues(blogText, primaryKw);
+    const formatFixes = seoFormatIssues(blogText, primaryKw, secStrings);
+
+    const ATTRIBUTION_RE = /\b(according to|in a study by|as (?:noted|reported|stated|mentioned|observed|shown|found) by|per (?:a|an|the)\b|research (?:by|from)|a (?:study|report|survey) (?:by|from)|cited by|sources? (?:say|report))\b/i;
+    const externalStyleFixes: string[] = [];
+    for (const l of seoExtractAnchors(blogText)) {
+      const isInternal = l.url.startsWith('/') || l.url.includes(brandSiteUrl);
+      if (isInternal || !/^https?:\/\//i.test(l.url)) continue;
+      const at = blogText.indexOf(`[${l.text}](${l.url})`);
+      const before = at >= 0 ? blogText.slice(Math.max(0, at - 80), at) : '';
+      if (ATTRIBUTION_RE.test(before)) {
+        externalStyleFixes.push(`The external link "${l.text}" is introduced with source-attribution phrasing — rewrite the sentence so the citation is invisible: drop the lead-in and make the anchor words that already belong to the sentence (not the publication or organization name).`);
+      }
+    }
+    if (externalStyleFixes.length === 0 && ATTRIBUTION_RE.test(blogText)) {
+      externalStyleFixes.push('Remove every source-attribution lead-in ("According to [source]", "In a study by [source]", "As noted by [source]", and similar) — external links must read as part of the sentence, not as references.');
+    }
+
+    const sections: string[] = [];
+    if (kwFixes.length) sections.push(`KEYWORD PLACEMENT:\n${kwFixes.map(s => `- ${s}`).join('\n')}`);
+    if (headingFixes.length) sections.push(`HEADINGS:\n${headingFixes.map(s => `- ${s}`).join('\n')}`);
+    if (linkFixes.length) sections.push(`LINKS:\n${linkFixes.map(s => `- ${s}`).join('\n')}`);
+    if (externalStyleFixes.length) sections.push(`EXTERNAL LINK STYLE:\n${externalStyleFixes.map(s => `- ${s}`).join('\n')}`);
+    if (metaFixes.length) sections.push(`META:\n${metaFixes.map(s => `- ${s}`).join('\n')}`);
+    if (formatFixes.length) sections.push(`FORMATTING:\n${formatFixes.map(s => `- ${s}`).join('\n')}`);
+
+    if (sections.length === 0) return null;
+
+    return `The draft violates the SEO Checklist v2. Fix every item below, then output the COMPLETE rewritten blog in Markdown.\n\n${sections.join('\n\n')}\n\nConstraints while fixing: keep total keyword mentions at exactly ${2 + secStrings.length} (PK 1× in H1 + 1× in body; each secondary 1× in body only). Never place a keyword in a subheading or as link anchor text. Weave external links invisibly into the prose — no source-attribution phrasing ("According to…", "In a study by…", "As noted by…"), and the anchor text must be words already natural to the sentence, never a publication or organization name. Use natural synonyms for any replacement — never reuse another keyword from the list. Keep em-dashes spaced ( — ), separate every paragraph and bullet with a blank line, and do not exceed the parent service page's word count.`;
   };
 
   // ── Main stream + enforce keyword density ──────────────────────────────────
@@ -523,53 +800,36 @@ META_DESCRIPTION: [description here]`;
       return;
     }
 
-    // Check keyword counts + link coverage — rewrite loop (max 3 attempts)
+    // 3-pass SEO validation loop — buildRewritePrompt covers keywords, headings,
+    // links (exactly 2 internal + 2 external), invisible citations, meta, formatting.
     let currentHistory: Message[] = [...history, { role: 'assistant' as const, content: fullText }];
-    let attempts = 0;
     const MAX_REWRITE_ATTEMPTS = 3;
 
-    while (attempts < MAX_REWRITE_ATTEMPTS) {
-      const offTarget = findOffTargetKeywords(fullText);
-      const providedInternal = internalLinksRef.current.filter(l => l.url.trim()).map(l => l.url.trim());
-      const providedExternal = externalLinksRef.current.filter(l => l.url.trim()).map(l => l.url.trim());
-      const missingInternal = findMissingLinks(fullText, providedInternal);
-      const missingExternal = findMissingLinks(fullText, providedExternal);
-      if (offTarget.length === 0 && missingInternal.length === 0 && missingExternal.length === 0) break;
+    for (let attempt = 1; attempt <= MAX_REWRITE_ATTEMPTS; attempt++) {
+      console.log(`[rewrite-loop] attempt ${attempt}/${MAX_REWRITE_ATTEMPTS}`, {
+        offTarget: findOffTargetKeywords(fullText, primaryKeywordRef.current, secondaryKeywordsRef.current),
+      });
+      const rewritePrompt = buildRewritePrompt(
+        fullText,
+        primaryKeywordRef.current,
+        secondaryKeywordsRef.current,
+        internalLinksRef.current,
+        externalLinksRef.current
+      );
+      if (!rewritePrompt) break;
 
-      attempts++;
       setIsOptimizing(true);
-
       setMessages((prev) => {
         const u = [...prev];
-        u[u.length - 1] = { role: 'assistant', content: `_Fixing keywords/links... (attempt ${attempts})_` };
+        u[u.length - 1] = { role: 'assistant', content: `_Fixing SEO issues... (attempt ${attempt})_` };
         return u;
       });
 
-      const parts: string[] = [];
-      if (offTarget.length > 0) {
-        const kwLines = offTarget.map(o =>
-          o.direction === 'too_many'
-            ? `- "${o.keyword}" appears ${o.count} times — remove ${o.count - o.target} instance(s) (target: ${o.target})`
-            : `- "${o.keyword}" appears ${o.count} times — add ${o.target - o.count} more instance(s) naturally (target: ${o.target})`
-        ).join('\n');
-        parts.push(`Keyword counts don't match the targets:\n${kwLines}`);
-      }
-      if (missingInternal.length > 0) {
-        parts.push(`Missing internal links — add each one naturally as a markdown link [anchor text](url):\n${missingInternal.map(u => `- ${u}`).join('\n')}`);
-      }
-      if (missingExternal.length > 0) {
-        parts.push(`Missing external links — cite each one naturally as a markdown link [anchor text](url):\n${missingExternal.map(u => `- ${u}`).join('\n')}`);
-      }
-      const rewritePrompt = `${parts.join('\n\n')}\n\nRewrite the full blog to fix the issues above. Keep everything else identical — same structure, headings, and length. Return the full rewritten blog only.`;
-
-      const rewriteHistory: Message[] = [...currentHistory, { role: 'user', content: rewritePrompt }];
-
+      const fixHistory: Message[] = [...currentHistory, { role: 'user', content: rewritePrompt }];
       try {
-        fullText = await streamOnce(rewriteHistory, true);
-        currentHistory = [...rewriteHistory, { role: 'assistant' as const, content: fullText }];
-      } catch {
-        break;
-      }
+        fullText = await streamOnce(fixHistory, true);
+        currentHistory = [...fixHistory, { role: 'assistant' as const, content: fullText }];
+      } catch { break; }
     }
 
     setIsOptimizing(false);
@@ -595,9 +855,9 @@ META_DESCRIPTION: [description here]`;
 
   const generatePost = async () => {
     if (!topic.trim()) { alert('Please enter a blog topic.'); return; }
-    const linksContext = buildLinksContext(internalLinks, externalLinks);
+    const linksContext = buildLinksContext(internalLinks, externalLinks, brandSiteUrl);
     const hasLinks = internalLinks.some((l) => l.url.trim()) || externalLinks.some((l) => l.url.trim());
-    const kwContext = buildBlogKeywordsContext(primaryKeyword, secondaryKeywords);
+    const kwContext = buildBlogKeywordsContext(primaryKeyword, secondaryKeywords, PK_TOTAL_TARGET, SK_BODY_TARGET);
 
     const h2Lines = h2Outline.trim()
       ? h2Outline.split('\n').filter(l => l.trim()).map((l, i) => `${i + 1}. ${l.trim().replace(/^\d+[\.\)]\s*/, '')}`).join('\n')
@@ -730,12 +990,12 @@ META_DESCRIPTION: [description here]`;
 
   // ── Keyword audit ─────────────────────────────────────────────────────────
   const showKwAudit = !isStreaming && lastAssistantMsg && (primaryKeyword || secondaryKeywords.length > 0);
-  const kwAuditText = lastAssistantMsg?.content.toLowerCase() ?? '';
-  const primaryKwCount = primaryKeyword ? (kwAuditText.match(new RegExp(primaryKeyword.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length : 0;
-  const uniqueSecondaryKws = [...new Set(secondaryKeywords.map(k => k.keyword))];
+  const uniqueSecondaryKws = [...new Set(secondaryKeywords.map(k => k.keyword).filter(Boolean))];
+  const kwReport = lastAssistantMsg ? seoAnalyzeKeywords(lastAssistantMsg.content, primaryKeyword, uniqueSecondaryKws) : null;
+  const primaryKwCount = kwReport ? kwReport.pkH1 + kwReport.pkBody : 0;
   const secondaryKwAudit = uniqueSecondaryKws.map((kw) => ({
     kw,
-    count: (kwAuditText.match(new RegExp(kw.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length,
+    count: kwReport?.secondaries.find(s => s.keyword === kw)?.presence ?? 0,
   }));
 
   return (
@@ -1407,7 +1667,7 @@ META_DESCRIPTION: [description here]`;
                   )}
 
                   <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', margin: '8px 0 0', fontStyle: 'italic' }}>
-                    Limit: primary keyword max 2&times;, secondary keywords max 2&times; each
+                    Target: PK exactly 2&times; (1&times; H1 + 1&times; body) &middot; each secondary keyword exactly 1&times; in body
                   </p>
                 </div>
               )}
