@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { API_BASE } from '@/lib/api';
+import { API_BASE, apiFetch } from '@/lib/api';
 import { getActiveClientId } from '@/lib/activeClient';
 import ActiveClientPill from '../Shared/ActiveClientPill';
 
@@ -79,6 +79,10 @@ function parseLinksFromText(text: string): Array<{ href: string; text: string }>
 }
 
 interface SecondaryKeyword { id: number; keyword: string; }
+interface KeywordConflictResult {
+  primaryConflict: { title: string; keyword: string } | null;
+  secondaryOverlaps: { title: string; keywords: string[] }[];
+}
 
 // ─── SEO Checklist v2 helpers ─────────────────────────────────────────────────
 // Fixed keyword-count model: PK 1×H1 + 1×body = 2 total; each SK 1×body.
@@ -224,10 +228,15 @@ function seoLinkIssues(blogText: string, siteUrl: string, keywords: string[]): s
       ? `Only ${internal.length} internal link(s) — there must be exactly 2: IL1 to the assigned service page and IL2 to the homepage (https://${siteUrl}). Add the missing one with a natural, descriptive anchor.`
       : `${internal.length} internal links — prune to exactly 2 (IL1 service page + IL2 homepage). When removing an excess link, keep the surrounding text but unlink it; if the released text is a keyword, swap in a synonym.`);
   }
-  const hasHome = internal.some(l => {
-    try { return new URL(l.url.startsWith('http') ? l.url : `https://${siteUrl}${l.url}`).pathname.replace(/\/$/, '') === ''; } catch { return false; }
-  });
-  if (internal.length >= 1 && !hasHome) issues.push(`Internal Link 2 must point to the homepage (https://${siteUrl}).`);
+  const isHome = (url: string): boolean => {
+    try { return new URL(url.startsWith('http') ? url : `https://${siteUrl}${url}`).pathname.replace(/\/$/, '') === ''; } catch { return false; }
+  };
+  const homeLinks = internal.filter(l => isHome(l.url));
+  if (internal.length >= 1 && homeLinks.length === 0) issues.push(`Internal Link 2 must point to the homepage (https://${siteUrl}).`);
+  // IL1 must be the service page and IL2 the homepage — they cannot both be the homepage.
+  if (internal.length === 2 && homeLinks.length === 2) {
+    issues.push('Internal Link 1 and Internal Link 2 both point to the homepage — IL1 must link to the relevant service page.');
+  }
   if (external.length !== 2) {
     issues.push(external.length < 2
       ? `Only ${external.length} external link(s) — there must be exactly 2 to authoritative, relevant sources (link to specific pages, not site homepages). Add the missing one.`
@@ -289,6 +298,8 @@ function extractLabel(raw: string, url: string): string {
   return raw.slice(0, idx).replace(/[\s—\-:|]+$/, '').trim();
 }
 
+// NOTE: duplicated in backend/src/utils/seoChecklist.ts (frontend and backend are
+// separate packages with no shared module path). Keep the two copies in sync.
 const brandSiteUrl = 'landscapio.co';
 
 function buildBlogKeywordsContext(primaryKeyword: string, secondaryKeywords: SecondaryKeyword[], _pkTarget: number, _skTarget: number): string {
@@ -426,8 +437,39 @@ const MagicBlog = () => {
   const [secondaryKeywordInput, setSecondaryKeywordInput] = useState('');
   const [kwSidebarOpen, setKwSidebarOpen] = useState(true);
 
+  // ── Cross-blog keyword cannibalization guard ─────────────────────────────────
+  const [conflictModal, setConflictModal] = useState<KeywordConflictResult | null>(null);
+  const [pendingGenerateFn, setPendingGenerateFn] = useState<(() => Promise<void>) | null>(null);
+
+  const checkKeywordConflicts = async (
+    primaryKw: string,
+    secondaryKws: string[],
+    excludeRecordId?: string,
+  ): Promise<KeywordConflictResult | null> => {
+    const clientId = getActiveClientId();
+    if (!clientId) return null;
+    try {
+      const res = await apiFetch(`${API_BASE}/api/ai/blog/check-keyword-conflicts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` },
+        body: JSON.stringify({
+          clientId,
+          orgId: localStorage.getItem('orgId'),
+          primaryKeyword: primaryKw,
+          secondaryKeywords: secondaryKws.filter(Boolean),
+          excludeRecordId,
+        }),
+      });
+      if (!res.ok) return null;
+      return (await res.json()) as KeywordConflictResult;
+    } catch {
+      return null; // dedup is best-effort — never block generation on a check failure
+    }
+  };
+
+  // Hard cap: 1 primary + 2 secondary = 3 keywords max per blog (anti-cannibalization).
   const totalKeywordCount = (primaryKeyword ? 1 : 0) + secondaryKeywords.length;
-  const totalKwColor = totalKeywordCount === 0 ? 'rgba(255,255,255,0.35)' : totalKeywordCount <= 8 ? 'rgba(255,255,255,0.85)' : '#6b8f3e';
+  const totalKwColor = totalKeywordCount === 0 ? 'rgba(255,255,255,0.35)' : totalKeywordCount === 3 ? '#6b8f3e' : 'rgba(255,255,255,0.85)';
 
   const addPrimaryKeyword = () => {
     const t = primaryKeywordInput.trim();
@@ -438,7 +480,7 @@ const MagicBlog = () => {
   const removePrimaryKeyword = () => setPrimaryKeyword('');
   const addSecondaryKeyword = () => {
     const t = secondaryKeywordInput.trim();
-    if (!t || secondaryKeywords.length >= 10) return;
+    if (!t || secondaryKeywords.length >= 2) return;
     setSecondaryKeywords((p) => [...p, { id: Date.now(), keyword: t }]);
     setSecondaryKeywordInput('');
   };
@@ -473,7 +515,7 @@ const MagicBlog = () => {
       if (trackerStatusFilter && trackerStatusFilter !== 'All') {
         params.set('status', trackerStatusFilter);
       }
-      const res = await fetch(`${API_BASE}/api/airtable/fetch-blogs?${params.toString()}`);
+      const res = await apiFetch(`${API_BASE}/api/airtable/fetch-blogs?${params.toString()}`);
       const data = await res.json();
       if (data.success) {
         let records = data.records || [];
@@ -498,7 +540,7 @@ const MagicBlog = () => {
       const clientId = getActiveClientId();
       if (!clientId) return;
       try {
-        await fetch(`${API_BASE}/api/airtable/mark-progress`, {
+        await apiFetch(`${API_BASE}/api/airtable/mark-progress`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ clientId, recordId: record.id }),
         });
@@ -557,11 +599,26 @@ const MagicBlog = () => {
       `\nWrite the full article now following the system prompt rules.`,
     ].filter(Boolean).join('\n');
 
-    // Clear chat and start generation
-    setMessages([]);
-    historyRef.current = [];
-    setAuditOpen(true);
-    await sendMessage(promptParts);
+    const proceedWithGeneration = async () => {
+      // Clear chat and start generation
+      setMessages([]);
+      historyRef.current = [];
+      setAuditOpen(true);
+      await sendMessage(promptParts);
+    };
+
+    // Anti-cannibalization: check the new keywords against already-written blogs
+    // for this client before generating. Exclude this tracker row when rewriting.
+    const conflicts = await checkKeywordConflicts(pk, newSecondary.map(k => k.keyword), selectedTracker.id);
+    if (conflicts?.primaryConflict) {
+      setConflictModal(conflicts);
+      setPendingGenerateFn(() => proceedWithGeneration); // blocking modal — wait for user
+      return;
+    }
+    if (conflicts?.secondaryOverlaps?.length) {
+      setConflictModal(conflicts); // non-blocking banner — generation still proceeds
+    }
+    await proceedWithGeneration();
   };
 
   const addToAirtableTracker = async (status: 'Created' | 'Posted') => {
@@ -574,7 +631,7 @@ const MagicBlog = () => {
         setTimeout(() => setTrackerUpdateStatus('idle'), 4000);
         return;
       }
-      const res = await fetch(`${API_BASE}/api/airtable/update-blog`, {
+      const res = await apiFetch(`${API_BASE}/api/airtable/update-blog`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           clientId,
@@ -881,8 +938,23 @@ META_DESCRIPTION: [description here]`;
       hasLinks ? `\nLINKING INSTRUCTIONS:\n- Use ALL internal links provided. Spread them across the blog — do not cluster them together.\n- Use varied anchor text for every internal link. Never repeat the same anchor text twice.\n- Use ALL external links provided. Reference them naturally when citing facts, tips, or statistics.\n- Format all links as proper markdown links: [anchor text](url)` : null,
       `\nWrite the full article now following the system prompt rules.`,
     ].filter(Boolean).join('\n');
-    setAuditOpen(true);
-    await sendMessage(prompt);
+
+    const proceedWithGeneration = async () => {
+      setAuditOpen(true);
+      await sendMessage(prompt);
+    };
+
+    // Anti-cannibalization: check keywords against already-written blogs first.
+    const conflicts = await checkKeywordConflicts(primaryKeyword, secondaryKeywords.map(k => k.keyword));
+    if (conflicts?.primaryConflict) {
+      setConflictModal(conflicts);
+      setPendingGenerateFn(() => proceedWithGeneration);
+      return;
+    }
+    if (conflicts?.secondaryOverlaps?.length) {
+      setConflictModal(conflicts);
+    }
+    await proceedWithGeneration();
   };
 
   const lastAssistantMsg = [...messages].reverse().find((m) => m.role === 'assistant' && m.content.length > 50);
@@ -899,7 +971,7 @@ META_DESCRIPTION: [description here]`;
 
     setAirtableStatus('logging');
     try {
-      const res = await fetch(`${API_BASE}/api/airtable/log-blog`, {
+      const res = await apiFetch(`${API_BASE}/api/airtable/log-blog`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -949,9 +1021,13 @@ META_DESCRIPTION: [description here]`;
       const wc = blogContent.split(/\s+/).length;
 
       const clientId = getActiveClientId();
-      const res = await fetch(`${API_BASE}/api/blog-posts`, {
+      const token = localStorage.getItem('token');
+      const orgId = localStorage.getItem('orgId');
+      if (!orgId) throw new Error('No active organization');
+      // Org-scoped route: POST /api/orgs/:orgId/blog-posts (auth + resolveOrg).
+      const res = await fetch(`${API_BASE}/api/orgs/${orgId}/blog-posts`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           title,
           content: blogContent,
@@ -1196,7 +1272,7 @@ META_DESCRIPTION: [description here]`;
                       + Add Internal Link {internalLinks.length >= 8 ? '(max 8)' : `(${internalLinks.length}/8)`}
                     </button>
                     <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', margin: '5px 0 0', fontStyle: 'italic' }}>
-                      Add 4-5 internal links for best SEO results
+                      Only the first service-page link and the homepage link will be used (2 total).
                     </p>
                   </div>
 
@@ -1330,6 +1406,19 @@ META_DESCRIPTION: [description here]`;
         {airtableStatus === 'failed' && (
           <div style={{ padding: '6px 20px', fontSize: 12, color: '#f87171', background: 'rgba(248,113,113,0.06)', borderBottom: '1px solid rgba(248,113,113,0.15)', transition: 'all 0.3s' }}>
             Airtable log failed — check console
+          </div>
+        )}
+
+        {/* ── Secondary keyword overlap notice (non-blocking) ── */}
+        {conflictModal && !conflictModal.primaryConflict && conflictModal.secondaryOverlaps.length > 0 && (
+          <div style={{ padding: '10px 20px', fontSize: 12.5, color: '#e8c97a', background: 'rgba(232,201,122,0.08)', borderBottom: '1px solid rgba(232,201,122,0.22)', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <span style={{ fontSize: 14, flexShrink: 0, lineHeight: 1.4 }}>{'⚠️'}</span>
+            <div style={{ flex: 1, lineHeight: 1.5 }}>
+              {conflictModal.secondaryOverlaps.map((o, i) => (
+                <div key={i}>These secondary keywords overlap with "<strong>{o.title}</strong>": {o.keywords.join(', ')}. Consider differentiating to avoid cannibalization.</div>
+              ))}
+            </div>
+            <button onClick={() => setConflictModal(null)} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)', cursor: 'pointer', fontSize: 16, lineHeight: 1, flexShrink: 0, padding: 0 }}>&times;</button>
           </div>
         )}
 
@@ -1563,9 +1652,9 @@ META_DESCRIPTION: [description here]`;
                           <span style={{ fontSize: 11, fontWeight: 600, color: internalFound.length > 0 ? 'rgba(107,143,62,0.9)' : 'rgba(107,143,62,0.9)' }}>
                             Internal Links — {internalFound.length} of {validInternalUrls.length} placed
                           </span>
-                          {internalFound.length < 4 && validInternalUrls.length > 0 && (
+                          {internalFound.length < 2 && validInternalUrls.length > 0 && (
                             <span style={{ fontSize: 10, background: 'rgba(107,143,62,0.12)', border: '1px solid rgba(107,143,62,0.3)', borderRadius: 4, padding: '1px 6px', color: 'rgba(107,143,62,0.8)' }}>
-                              aim for 4+
+                              aim for 2
                             </span>
                           )}
                         </div>
@@ -1754,15 +1843,15 @@ META_DESCRIPTION: [description here]`;
                 type="text"
                 placeholder="e.g. landscaping company near me"
                 value={secondaryKeywordInput}
-                disabled={secondaryKeywords.length >= 10}
+                disabled={secondaryKeywords.length >= 2}
                 onChange={(e) => setSecondaryKeywordInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addSecondaryKeyword(); } }}
               />
-              <button className="kw-add-blog" onClick={addSecondaryKeyword} disabled={secondaryKeywords.length >= 10 || !secondaryKeywordInput.trim()}>Add</button>
+              <button className="kw-add-blog" onClick={addSecondaryKeyword} disabled={secondaryKeywords.length >= 2 || !secondaryKeywordInput.trim()}>Add</button>
             </div>
 
-            {secondaryKeywords.length >= 10 && (
-              <p style={{ fontSize: 10, color: 'rgba(107,143,62,0.7)', margin: '0 0 6px', fontStyle: 'italic' }}>Maximum 10 secondary keywords reached</p>
+            {secondaryKeywords.length >= 2 && (
+              <p style={{ fontSize: 10, color: 'rgba(107,143,62,0.7)', margin: '0 0 6px', fontStyle: 'italic' }}>Maximum 2 secondary keywords reached</p>
             )}
 
             <div style={{ display: 'flex', flexWrap: 'wrap', margin: '-3px' }}>
@@ -1794,10 +1883,10 @@ META_DESCRIPTION: [description here]`;
             <div style={{ marginBottom: 14 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
                 <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>Secondary Keywords</span>
-                <span style={{ fontSize: 11, fontWeight: 600, color: 'rgba(74,124,47,0.7)' }}>{secondaryKeywords.length} / 10</span>
+                <span style={{ fontSize: 11, fontWeight: 600, color: 'rgba(74,124,47,0.7)' }}>{secondaryKeywords.length} / 2</span>
               </div>
               <div className="kw-progress-blog">
-                <div className="kw-progress-fill-blog" style={{ width: `${(secondaryKeywords.length / 10) * 100}%` }} />
+                <div className="kw-progress-fill-blog" style={{ width: `${(secondaryKeywords.length / 2) * 100}%` }} />
               </div>
             </div>
 
@@ -1805,7 +1894,7 @@ META_DESCRIPTION: [description here]`;
             <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, padding: '10px 12px', marginBottom: 14, textAlign: 'center' }}>
               <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Total Keywords</div>
               <div style={{ fontSize: 22, fontWeight: 700, color: totalKwColor, lineHeight: 1 }}>{totalKeywordCount}</div>
-              <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 2 }}>/ 11</div>
+              <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 2 }}>/ 3</div>
             </div>
 
             <button className="clear-all-blog" onClick={clearAllKeywords} disabled={totalKeywordCount === 0}>
@@ -1815,6 +1904,35 @@ META_DESCRIPTION: [description here]`;
 
         </div>
       </aside>
+
+      {/* ── Primary keyword conflict modal (blocking) ── */}
+      {conflictModal?.primaryConflict && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div style={{ width: '90%', maxWidth: 460, background: '#111f11', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 14, padding: '22px 22px 18px', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <span style={{ fontSize: 20 }}>{'⚠️'}</span>
+              <span style={{ fontSize: 15, fontWeight: 700, color: '#fff' }}>Possible keyword cannibalization</span>
+            </div>
+            <p style={{ fontSize: 13, lineHeight: 1.6, color: 'rgba(255,255,255,0.7)', margin: '0 0 18px' }}>
+              You already have a blog targeting "<strong style={{ color: '#9ab897' }}>{conflictModal.primaryConflict.keyword}</strong>" (<em>{conflictModal.primaryConflict.title}</em>). Consider updating that post instead, or choose a different primary keyword.
+            </p>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => { setConflictModal(null); setPendingGenerateFn(null); }}
+                style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 8, color: 'rgba(255,255,255,0.75)', padding: '8px 14px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}
+              >
+                Choose a different keyword
+              </button>
+              <button
+                onClick={async () => { const fn = pendingGenerateFn; setConflictModal(null); setPendingGenerateFn(null); if (fn) await fn(); }}
+                style={{ background: 'linear-gradient(135deg, #6b8f3e, #9ab897)', border: 'none', borderRadius: 8, color: '#fff', padding: '8px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
+              >
+                Continue anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import User from '../models/User';
@@ -127,7 +128,20 @@ export const login = async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
 
-    const user = await User.findOne({ email });
+    // Focused guard around the DB read so a connectivity failure surfaces clearly
+    // in the logs instead of a generic 500. connectDatabase() does NOT exit on a
+    // failed boot connection, so findOne can fail/timeout while the server runs.
+    let user;
+    try {
+      user = await User.findOne({ email });
+    } catch (dbErr: any) {
+      // mongoose readyState: 0=disconnected, 1=connected, 2=connecting, 3=disconnecting
+      console.error(
+        `Login DB query failed (User.findOne) — mongoose.readyState=${mongoose.connection.readyState} ` +
+        `email=${email}: ${dbErr?.message}\n`, dbErr?.stack,
+      );
+      return res.status(503).json({ message: 'Database unavailable. Please try again shortly.' });
+    }
     if (!user) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }

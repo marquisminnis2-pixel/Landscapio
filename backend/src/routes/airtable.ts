@@ -45,22 +45,24 @@ router.get('/fetch-blogs', async (req: Request, res: Response) => {
 
 // Blog Tracker: mark a row as "In Progress"
 router.post('/mark-progress', async (req: Request, res: Response) => {
+  const { clientId, recordId } = req.body;
   try {
-    const { clientId, recordId } = req.body;
     if (!clientId) return res.status(400).json({ success: false, error: 'clientId is required' });
     if (!recordId) return res.status(400).json({ success: false, error: 'recordId is required' });
     await markInProgress(clientId, recordId);
     res.json({ success: true });
   } catch (error: any) {
-    console.error('Airtable mark-progress error:', error.message);
-    res.status(500).json({ success: false, error: error.message });
+    const notConfigured = /not configured/i.test(error?.message || '');
+    console.error(`Airtable mark-progress error [client=${clientId} record=${recordId}]:`, error?.message, '\n', error?.stack);
+    // Config problems are caller data, not a transient upstream failure → 400; real Airtable errors → 502.
+    res.status(notConfigured ? 400 : 502).json({ success: false, error: error?.message || 'Unknown error' });
   }
 });
 
 // Blog Tracker: update a row with blog content, meta, and status
 router.post('/update-blog', async (req: Request, res: Response) => {
+  const { clientId, recordId, blogContent, status, metaTitle, metaDescription } = req.body;
   try {
-    const { clientId, recordId, blogContent, status, metaTitle, metaDescription } = req.body;
     if (!clientId) return res.status(400).json({ success: false, error: 'clientId is required' });
     if (!recordId || !status) {
       return res.status(400).json({ success: false, error: 'recordId and status are required' });
@@ -72,8 +74,12 @@ router.post('/update-blog', async (req: Request, res: Response) => {
     const result = await updateBlogRecord(clientId, recordId, fields);
     res.json({ success: true, result });
   } catch (error: any) {
-    console.error('Airtable update-blog error:', error.message);
-    res.status(500).json({ success: false, error: error.message });
+    const notConfigured = /not configured/i.test(error?.message || '');
+    console.error(
+      `Airtable update-blog error [client=${clientId} record=${recordId} status=${status} fields=${[blogContent && 'Blog Copy', metaTitle && 'Meta Title', metaDescription && 'Meta Description'].filter(Boolean).join(',')}]:`,
+      error?.message, '\n', error?.stack,
+    );
+    res.status(notConfigured ? 400 : 502).json({ success: false, error: error?.message || 'Unknown error' });
   }
 });
 

@@ -23,6 +23,16 @@ const ClientDashboard = () => {
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [loading, setLoading] = useState(true);
   const [contextExpanded, setContextExpanded] = useState(true);
+  // Set by apiFetch's self-heal when the previously active client no longer
+  // exists (e.g. it was deleted). Tells the user why they landed back here.
+  const [staleClientNotice, setStaleClientNotice] = useState(false);
+
+  useEffect(() => {
+    if (sessionStorage.getItem('clientNotFoundNotice')) {
+      sessionStorage.removeItem('clientNotFoundNotice');
+      setStaleClientNotice(true);
+    }
+  }, []);
 
   const token = localStorage.getItem('token');
   const orgId = localStorage.getItem('orgId');
@@ -216,6 +226,21 @@ const ClientDashboard = () => {
 
           {/* Client list */}
           <div className="cd-sidebar-scroll" style={{ flex: 1, overflowY: 'auto', padding: '12px' }}>
+            {staleClientNotice && (
+              <div style={{
+                margin: '0 0 12px',
+                padding: '10px 12px',
+                fontSize: '11px',
+                lineHeight: 1.5,
+                fontFamily: "'JetBrains Mono', monospace",
+                color: '#e6b800',
+                background: 'rgba(230,184,0,0.08)',
+                border: '1px solid rgba(230,184,0,0.25)',
+                borderRadius: '8px',
+              }}>
+                The previously selected client is no longer available. Please pick a client to continue.
+              </div>
+            )}
             {loading ? (
               <div style={{ textAlign: 'center', padding: '30px 0' }}>
                 <div style={{ display: 'flex', justifyContent: 'center', gap: '4px' }}>

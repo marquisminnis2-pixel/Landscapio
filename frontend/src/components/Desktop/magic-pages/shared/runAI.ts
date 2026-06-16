@@ -1,4 +1,5 @@
 import { API_BASE } from '@/lib/api';
+import { getActiveClientId } from '@/lib/activeClient';
 
 export interface PageSection {
   id: string;
@@ -19,10 +20,12 @@ export interface MagicPagesOutput {
 
 export async function runMagicPagesAI(userPrompt: string): Promise<MagicPagesOutput> {
   const token = localStorage.getItem('token');
+  const clientId = getActiveClientId();
+  const orgId = localStorage.getItem('orgId');
   const res = await fetch(`${API_BASE}/api/ai/pages/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ userPrompt }),
+    body: JSON.stringify({ userPrompt, clientId, orgId }),
   });
   if (!res.ok) throw new Error(`Server error: ${res.status}`);
   const data = await res.json() as { text: string };

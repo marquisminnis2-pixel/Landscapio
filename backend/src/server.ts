@@ -29,10 +29,20 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // CORS middleware
-const allowedOrigins = (process.env.FRONTEND_URL || '')
-  .split(',')
-  .map((o) => o.trim())
-  .filter(Boolean);
+// Known production origins are always allowed so CORS doesn't depend on the
+// FRONTEND_URL env var being set correctly in every environment. Any localhost
+// port is allowed via the regex below, and FRONTEND_URL can add more origins.
+const defaultAllowedOrigins = ['https://agent.landscapio.co'];
+
+const allowedOrigins = Array.from(
+  new Set([
+    ...defaultAllowedOrigins,
+    ...(process.env.FRONTEND_URL || '')
+      .split(',')
+      .map((o) => o.trim())
+      .filter(Boolean),
+  ])
+);
 
 const localhostRegex = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 

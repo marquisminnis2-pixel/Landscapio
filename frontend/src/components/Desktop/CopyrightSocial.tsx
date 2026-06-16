@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { API_BASE } from '@/lib/api';
+import { API_BASE, apiFetch } from '@/lib/api';
 import { getActiveClientId } from '@/lib/activeClient';
 
 interface Message { role: 'user' | 'assistant'; content: string; }
@@ -96,7 +96,7 @@ const CopyrightSocial = () => {
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`${API_BASE}/api/ai/copyright/chat`, {
+      const res = await fetch(`${API_BASE}/api/ai/posts/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ messages: history }),
@@ -175,7 +175,7 @@ const CopyrightSocial = () => {
     }
     setAirtableStatus('logging');
     try {
-      const res = await fetch(`${API_BASE}/api/airtable/log-social-post`, {
+      const res = await apiFetch(`${API_BASE}/api/airtable/log-social-post`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
