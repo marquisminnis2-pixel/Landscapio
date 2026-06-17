@@ -302,7 +302,7 @@ function extractLabel(raw: string, url: string): string {
 // separate packages with no shared module path). Keep the two copies in sync.
 const brandSiteUrl = 'landscapio.co';
 
-function buildBlogKeywordsContext(primaryKeyword: string, secondaryKeywords: SecondaryKeyword[], _pkTarget: number, _skTarget: number): string {
+function buildBlogKeywordsContext(primaryKeyword: string, secondaryKeywords: SecondaryKeyword[], _pkTarget: number, _skTarget: number, fixedH1?: string): string {
   const pk = (primaryKeyword || '').trim();
   const sks = secondaryKeywords.map(k => k.keyword.trim()).filter(Boolean);
   if (!pk && sks.length === 0) return '';
@@ -317,16 +317,26 @@ function buildBlogKeywordsContext(primaryKeyword: string, secondaryKeywords: Sec
   if (sk1 && sk2 && seoIsSubstring(sk1, sk2)) overlapNotes.push(`• "${sk1}" (SK1) is INSIDE "${sk2}" (SK2) — one "${sk2}" covers "${sk1}". Do NOT add a separate "${sk1}" (Rule C).`);
   if (sk1 && sk2 && seoIsSubstring(sk2, sk1)) overlapNotes.push(`• "${sk2}" (SK2) is INSIDE "${sk1}" (SK1) — one "${sk1}" covers "${sk2}". Do NOT add a separate "${sk2}" (Rule C).`);
 
+  // When the H1 is fixed (tracker flow), the PK must NOT go in the H1 — it lives in
+  // the body only — and the H1 must be reproduced verbatim from the Airtable title.
+  const fixedH1Banner = fixedH1
+    ? `FIXED H1 — the blog's H1/title MUST be exactly: "${fixedH1}". Reproduce it verbatim as the single # heading. Do NOT rewrite it, paraphrase it, or insert any keyword into it.\n\n`
+    : '';
+  const pkPlacement = fixedH1
+    ? `  • Do NOT place the PK in the H1 — the H1 is FIXED (see above) and must not contain any keyword.\n  • Exactly 1× in the body — a standalone phrase inside a paragraph. Never in a subheading.`
+    : `  • Exactly 1× in the H1 — integrated naturally with an angle modifier. Never jam the exact phrase at the front like a label; rearrange the words if it reads better.\n  • Exactly 1× in the body — a standalone phrase inside a paragraph. Never in a subheading.`;
+  const totalCount = (fixedH1 ? 1 : 2) + sks.length;
+  const totalNote = !fixedH1 && sks.length === 2 ? ' (PK×2 + SK1×1 + SK2×1 = 4)' : (fixedH1 && sks.length === 2 ? ' (PK×1 in body + SK1×1 + SK2×1 = 3)' : '');
+
   return `KEYWORDS — EXACT PLACEMENT (SEO Checklist v2, fixed counts — NOT density-based):
 
-PRIMARY KEYWORD (PK): "${pk || 'None provided'}"
-  • Exactly 1× in the H1 — integrated naturally with an angle modifier. Never jam the exact phrase at the front like a label; rearrange the words if it reads better.
-  • Exactly 1× in the body — a standalone phrase inside a paragraph. Never in a subheading.
+${fixedH1Banner}PRIMARY KEYWORD (PK): "${pk || 'None provided'}"
+${pkPlacement}
 
 SECONDARY KEYWORDS (each exactly 1× in the BODY only, never in a subheading):
 ${sks.length ? sks.map((k, i) => `  SK${i + 1}. "${k}"`).join('\n') : '  None provided.'}
 
-TOTAL keyword mentions across the whole blog must equal exactly ${2 + sks.length}${sks.length === 2 ? ' (PK×2 + SK1×1 + SK2×1 = 4)' : ''}.
+TOTAL keyword mentions across the whole blog must equal exactly ${totalCount}${totalNote}.
 
 STOP-WORD RULE: "in" is ignored when matching keywords ("Landscaping Services in Dallas" = "Landscaping Services Dallas"). "for" is NOT a stop word.
 ${overlapNotes.length ? `\nSUBSTRING / OVERLAP RULES that apply here:\n${overlapNotes.join('\n')}\n` : ''}
@@ -340,7 +350,7 @@ META (output these two labelled lines at the very top, before the H1):
 - Meta Description: exactly 150–160 characters, declarative (not a question, not a keyword list), includes the primary keyword exactly 1×, unique vs. the parent service page.
 
 HEADINGS, FORMATTING & LENGTH:
-- H1 holds the PK once (natural + angle modifier). Capitalize the first word of every heading. No bold (**) inside any heading.
+${fixedH1 ? `- The H1 must be reproduced EXACTLY as: "${fixedH1}" — do not rewrite, paraphrase, or insert the primary keyword into it. Capitalize the first word of every heading. No bold (**) inside any heading.` : `- H1 holds the PK once (natural + angle modifier). Capitalize the first word of every heading. No bold (**) inside any heading.`}
 - Em-dashes (—) get a space on both sides. No non-breaking spaces (&nbsp;). Put a blank line between every paragraph and every bullet/list item.
 - Do not exceed the parent service page's word count — keep the blog concise and focused.`.trim();
 }
@@ -582,7 +592,7 @@ const MagicBlog = () => {
     else setExternalLinks([{ id: 1, url: '', label: '' }]);
 
     // Build content brief using SEO Checklist v2 helpers
-    const kwContext = pk ? buildBlogKeywordsContext(pk, newSecondary, PK_TOTAL_TARGET, SK_BODY_TARGET) : '';
+    const kwContext = pk ? buildBlogKeywordsContext(pk, newSecondary, PK_TOTAL_TARGET, SK_BODY_TARGET, blogTitle) : '';
     const linksContext = buildLinksContext(newInternalLinks, newExternalLinks, brandSiteUrl);
     const hasLinks = newInternalLinks.some(l => l.url.trim()) || newExternalLinks.some(l => l.url.trim());
 
