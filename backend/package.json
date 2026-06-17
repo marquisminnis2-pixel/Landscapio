@@ -11,7 +11,9 @@
     "start": "node dist/server.js",
     "test": "jest",
     "lint": "eslint . --ext .ts",
-    "thumbnail": "ts-node src/utils/thumbnailGenerator.ts"
+    "thumbnail": "ts-node src/utils/thumbnailGenerator.ts",
+    "final-import": "ts-node src/scripts/finalImportByKey.ts",
+    "cleanup-records": "ts-node src/scripts/cleanupRecords.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.478.0",
@@ -28,6 +30,7 @@
     "nodemailer": "^8.0.2",
     "stripe": "^20.2.0",
     "uuid": "^9.0.0",
+    "xlsx": "^0.18.5",
     "zod": "^3.22.4"
   },
   "devDependencies": {

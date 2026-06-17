@@ -48,6 +48,11 @@ coverage/
 *.tmp
 *.temp
 
+# Data files (Airtable import/export spreadsheets — not source)
+*.xlsx
+*.csv
+airtable_record_ids.csv
+
 # Credentials
 CREDENTIALS.md
 frontend/public/templates/
