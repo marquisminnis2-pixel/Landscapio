@@ -48,11 +48,13 @@ export async function fetchBlogs(clientId: string, status?: string) {
   let offset: string | undefined;
 
   do {
-    const sortParam = `&sort[0][field]=${encodeURIComponent('Scheduled Post Date')}&sort[0][direction]=asc`;
+    // Fetch in the Airtable "Grid view" order (numbered 1..466 as set up in Airtable).
+    // NOTE: a sort param would override the view's order, so we use the view only.
+    const viewParam = `&view=${encodeURIComponent('Grid view')}`;
     const filterPart = status && status !== 'All'
       ? `filterByFormula=${encodeURIComponent(`{Blog Status} = "${status}"`)}&`
       : '';
-    const url = `${baseUrl(cfg)}?${filterPart}${fieldParams}${sortParam}${offset ? `&offset=${offset}` : ''}`;
+    const url = `${baseUrl(cfg)}?${filterPart}${fieldParams}${viewParam}${offset ? `&offset=${offset}` : ''}`;
     const response = await fetch(url, { headers: headers(cfg) });
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));

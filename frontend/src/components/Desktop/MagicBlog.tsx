@@ -589,7 +589,8 @@ const MagicBlog = () => {
     const promptParts = [
       `CONTENT BRIEF`,
       ``,
-      `**Topic:** ${blogTitle}`,
+      `**Blog Title (use this EXACTLY as the H1 — do not rewrite or paraphrase it):** ${blogTitle}`,
+      `\nIMPORTANT: The H1 must be exactly: "${blogTitle}" — do not change, rephrase, or rewrite it under any circumstances.\n`,
       pk ? `**Primary keyword:** ${pk}` : null,
       newSecondary.length ? `**Secondary keywords:** ${newSecondary.map(k => k.keyword).join(', ')}` : null,
       blogOutline.trim() ? `\n**REQUIRED H2 OUTLINE:**\n${blogOutline}` : null,
@@ -600,6 +601,8 @@ const MagicBlog = () => {
     ].filter(Boolean).join('\n');
 
     const proceedWithGeneration = async () => {
+      // Lock the H1 to the Airtable blog title so the SEO rewrite loop won't rewrite it.
+      fixedH1Ref.current = blogTitle;
       // Clear chat and start generation
       setMessages([]);
       historyRef.current = [];
@@ -666,6 +669,8 @@ const MagicBlog = () => {
   const secondaryKeywordsRef = useRef(secondaryKeywords);
   const internalLinksRef = useRef(internalLinks);
   const externalLinksRef = useRef(externalLinks);
+  // Locked H1 for the tracker flow (writeSelectedBlog) — undefined in the manual flow.
+  const fixedH1Ref = useRef<string | undefined>(undefined);
   useEffect(() => { primaryKeywordRef.current = primaryKeyword; }, [primaryKeyword]);
   useEffect(() => { secondaryKeywordsRef.current = secondaryKeywords; }, [secondaryKeywords]);
   useEffect(() => { internalLinksRef.current = internalLinks; }, [internalLinks]);
@@ -785,16 +790,23 @@ META_DESCRIPTION: [description here]`;
   };
 
   // ── 3-pass rewrite prompt — covers keywords, headings, links, meta, formatting ──
-  const buildRewritePrompt = (blogText: string, primaryKw: string, secondaryKws: SecondaryKeyword[], _internals: LinkEntry[], _externals: LinkEntry[]): string | null => {
+  const buildRewritePrompt = (blogText: string, primaryKw: string, secondaryKws: SecondaryKeyword[], _internals: LinkEntry[], _externals: LinkEntry[], fixedH1?: string): string | null => {
     const secStrings = secondaryKws.map(k => k.keyword.trim()).filter(Boolean);
     const report = seoAnalyzeKeywords(blogText, primaryKw, secStrings);
 
     const kwFixes: string[] = [];
     if (primaryKw) {
-      if (report.pkH1 < PK_H1_TARGET) kwFixes.push(`Add the primary keyword "${primaryKw}" to the H1 exactly once, integrated naturally with an angle modifier (do not jam it at the front).`);
-      else if (report.pkH1 > PK_H1_TARGET) kwFixes.push(`The H1 mentions "${primaryKw}" ${report.pkH1}× — keep it exactly once.`);
-      if (report.pkBody < PK_BODY_TARGET) kwFixes.push(`Add exactly one standalone body mention of "${primaryKw}" inside a paragraph — it must stand on its own, not embedded inside a longer phrase (Rule A).`);
-      else if (report.pkBody > PK_BODY_TARGET) kwFixes.push(`The body mentions "${primaryKw}" ${report.pkBody}× — reduce to exactly 1 (replace extras with pronouns or natural synonyms, never another keyword from the list).`);
+      if (fixedH1) {
+        // H1 is fixed (the Airtable blog title) — never touch it; keep the primary
+        // keyword in the body instead of forcing it into the H1.
+        if (report.pkBody < 1) kwFixes.push(`The H1 must remain exactly: "${fixedH1}" — do not change it. Instead, ensure the primary keyword "${primaryKw}" appears naturally in the body.`);
+        else if (report.pkBody > 2) kwFixes.push(`The body mentions "${primaryKw}" ${report.pkBody}× — reduce to 1–2 (do NOT change the H1, which must stay "${fixedH1}").`);
+      } else {
+        if (report.pkH1 < PK_H1_TARGET) kwFixes.push(`Add the primary keyword "${primaryKw}" to the H1 exactly once, integrated naturally with an angle modifier (do not jam it at the front).`);
+        else if (report.pkH1 > PK_H1_TARGET) kwFixes.push(`The H1 mentions "${primaryKw}" ${report.pkH1}× — keep it exactly once.`);
+        if (report.pkBody < PK_BODY_TARGET) kwFixes.push(`Add exactly one standalone body mention of "${primaryKw}" inside a paragraph — it must stand on its own, not embedded inside a longer phrase (Rule A).`);
+        else if (report.pkBody > PK_BODY_TARGET) kwFixes.push(`The body mentions "${primaryKw}" ${report.pkBody}× — reduce to exactly 1 (replace extras with pronouns or natural synonyms, never another keyword from the list).`);
+      }
       if (report.pkSub > 0) kwFixes.push(`"${primaryKw}" appears in a subheading — remove it there and use a descriptive synonym.`);
     }
     for (const r of report.secondaries) {
@@ -808,7 +820,9 @@ META_DESCRIPTION: [description here]`;
       }
     }
 
-    const headingFixes = seoHeadingIssues(blogText, primaryKw, secStrings);
+    let headingFixes = seoHeadingIssues(blogText, primaryKw, secStrings);
+    // When the H1 is locked, drop the "integrate the PK into the H1" heading note.
+    if (fixedH1) headingFixes = headingFixes.filter(h => !/^H1 leads with the primary keyword/.test(h));
     const linkFixes = seoLinkIssues(blogText, brandSiteUrl, [primaryKw, ...secStrings].filter(Boolean));
     const metaFixes = seoMetaIssues(blogText, primaryKw);
     const formatFixes = seoFormatIssues(blogText, primaryKw, secStrings);
@@ -838,7 +852,10 @@ META_DESCRIPTION: [description here]`;
 
     if (sections.length === 0) return null;
 
-    return `The draft violates the SEO Checklist v2. Fix every item below, then output the COMPLETE rewritten blog in Markdown.\n\n${sections.join('\n\n')}\n\nConstraints while fixing: keep total keyword mentions at exactly ${2 + secStrings.length} (PK 1× in H1 + 1× in body; each secondary 1× in body only). Never place a keyword in a subheading or as link anchor text. Weave external links invisibly into the prose — no source-attribution phrasing ("According to…", "In a study by…", "As noted by…"), and the anchor text must be words already natural to the sentence, never a publication or organization name. Use natural synonyms for any replacement — never reuse another keyword from the list. Keep em-dashes spaced ( — ), separate every paragraph and bullet with a blank line, and do not exceed the parent service page's word count.`;
+    const kwRule = fixedH1
+      ? `Keep the H1 exactly as "${fixedH1}" — never rewrite it; the primary keyword belongs in the body (not forced into the H1), and each secondary keyword 1× in the body only.`
+      : `keep total keyword mentions at exactly ${2 + secStrings.length} (PK 1× in H1 + 1× in body; each secondary 1× in body only).`;
+    return `The draft violates the SEO Checklist v2. Fix every item below, then output the COMPLETE rewritten blog in Markdown.\n\n${sections.join('\n\n')}\n\nConstraints while fixing: ${kwRule} Never place a keyword in a subheading or as link anchor text. Weave external links invisibly into the prose — no source-attribution phrasing ("According to…", "In a study by…", "As noted by…"), and the anchor text must be words already natural to the sentence, never a publication or organization name. Use natural synonyms for any replacement — never reuse another keyword from the list. Keep em-dashes spaced ( — ), separate every paragraph and bullet with a blank line, and do not exceed the parent service page's word count.`;
   };
 
   // ── Main stream + enforce keyword density ──────────────────────────────────
@@ -871,7 +888,8 @@ META_DESCRIPTION: [description here]`;
         primaryKeywordRef.current,
         secondaryKeywordsRef.current,
         internalLinksRef.current,
-        externalLinksRef.current
+        externalLinksRef.current,
+        fixedH1Ref.current
       );
       if (!rewritePrompt) break;
 
@@ -940,6 +958,8 @@ META_DESCRIPTION: [description here]`;
     ].filter(Boolean).join('\n');
 
     const proceedWithGeneration = async () => {
+      // Manual flow — no locked H1 (Claude composes its own title).
+      fixedH1Ref.current = undefined;
       setAuditOpen(true);
       await sendMessage(prompt);
     };
@@ -1394,7 +1414,7 @@ META_DESCRIPTION: [description here]`;
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/></svg>
               Saved Blogs
             </button>
-            <button onClick={() => { setMessages([]); historyRef.current = []; setInput(''); setSaveStatus('idle'); setAirtableStatus('idle'); setMetaTitle(''); setMetaDescription(''); setTrackerUpdateStatus('idle'); }} style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7, color: 'rgba(255,255,255,0.7)', padding: '5px 12px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>New Chat</button>
+            <button onClick={() => { setMessages([]); historyRef.current = []; setInput(''); setSaveStatus('idle'); setAirtableStatus('idle'); setMetaTitle(''); setMetaDescription(''); setTrackerUpdateStatus('idle'); fixedH1Ref.current = undefined; }} style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7, color: 'rgba(255,255,255,0.7)', padding: '5px 12px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>New Chat</button>
           </div>
         </header>
 

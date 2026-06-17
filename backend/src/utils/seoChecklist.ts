@@ -214,17 +214,25 @@ export function buildSeoRewritePrompt(
   blogText: string,
   primaryKw: string,
   secondaryKws: string[],
-  siteUrl: string = brandSiteUrl
+  siteUrl: string = brandSiteUrl,
+  fixedH1?: string // when set (tracker flow), the H1 is locked and must not be rewritten
 ): string | null {
   const secStrings = secondaryKws.map(k => k.trim()).filter(Boolean);
   const report = seoAnalyzeKeywords(blogText, primaryKw, secStrings);
 
   const kwFixes: string[] = [];
   if (primaryKw) {
-    if (report.pkH1 < PK_H1_TARGET) kwFixes.push(`Add the primary keyword "${primaryKw}" to the H1 exactly once, integrated naturally with an angle modifier (do not jam it at the front).`);
-    else if (report.pkH1 > PK_H1_TARGET) kwFixes.push(`The H1 mentions "${primaryKw}" ${report.pkH1}× — keep it exactly once.`);
-    if (report.pkBody < PK_BODY_TARGET) kwFixes.push(`Add exactly one standalone body mention of "${primaryKw}" inside a paragraph — it must stand on its own, not embedded inside a longer phrase (Rule A).`);
-    else if (report.pkBody > PK_BODY_TARGET) kwFixes.push(`The body mentions "${primaryKw}" ${report.pkBody}× — reduce to exactly 1 (replace extras with pronouns or natural synonyms, never another keyword from the list).`);
+    if (fixedH1) {
+      // H1 is fixed (the Airtable blog title) — never touch it; keep the primary
+      // keyword in the body instead of forcing it into the H1.
+      if (report.pkBody < 1) kwFixes.push(`The H1 must remain exactly: "${fixedH1}" — do not change it. Instead, ensure the primary keyword "${primaryKw}" appears naturally in the body.`);
+      else if (report.pkBody > 2) kwFixes.push(`The body mentions "${primaryKw}" ${report.pkBody}× — reduce to 1–2 (do NOT change the H1, which must stay "${fixedH1}").`);
+    } else {
+      if (report.pkH1 < PK_H1_TARGET) kwFixes.push(`Add the primary keyword "${primaryKw}" to the H1 exactly once, integrated naturally with an angle modifier (do not jam it at the front).`);
+      else if (report.pkH1 > PK_H1_TARGET) kwFixes.push(`The H1 mentions "${primaryKw}" ${report.pkH1}× — keep it exactly once.`);
+      if (report.pkBody < PK_BODY_TARGET) kwFixes.push(`Add exactly one standalone body mention of "${primaryKw}" inside a paragraph — it must stand on its own, not embedded inside a longer phrase (Rule A).`);
+      else if (report.pkBody > PK_BODY_TARGET) kwFixes.push(`The body mentions "${primaryKw}" ${report.pkBody}× — reduce to exactly 1 (replace extras with pronouns or natural synonyms, never another keyword from the list).`);
+    }
     if (report.pkSub > 0) kwFixes.push(`"${primaryKw}" appears in a subheading — remove it there and use a descriptive synonym.`);
   }
   for (const r of report.secondaries) {
@@ -238,7 +246,10 @@ export function buildSeoRewritePrompt(
     }
   }
 
-  const headingFixes = seoHeadingIssues(blogText, primaryKw, secStrings);
+  let headingFixes = seoHeadingIssues(blogText, primaryKw, secStrings);
+  // When the H1 is locked, drop the "integrate the PK into the H1" heading note —
+  // it would otherwise tell Claude to rewrite the title.
+  if (fixedH1) headingFixes = headingFixes.filter(h => !/^H1 leads with the primary keyword/.test(h));
   const linkFixes = seoLinkIssues(blogText, siteUrl, [primaryKw, ...secStrings].filter(Boolean));
   const metaFixes = seoMetaIssues(blogText, primaryKw);
   const formatFixes = seoFormatIssues(blogText, primaryKw, secStrings);
@@ -268,5 +279,8 @@ export function buildSeoRewritePrompt(
 
   if (sections.length === 0) return null;
 
-  return `The draft violates the SEO Checklist v2. Fix every item below, then output the COMPLETE rewritten blog in Markdown.\n\n${sections.join('\n\n')}\n\nConstraints while fixing: keep total keyword mentions at exactly ${2 + secStrings.length} (PK 1× in H1 + 1× in body; each secondary 1× in body only). Never place a keyword in a subheading or as link anchor text. Weave external links invisibly into the prose — no source-attribution phrasing ("According to…", "In a study by…", "As noted by…"), and the anchor text must be words already natural to the sentence, never a publication or organization name. Use natural synonyms for any replacement — never reuse another keyword from the list. Keep em-dashes spaced ( — ), separate every paragraph and bullet with a blank line, and do not exceed the parent service page's word count.`;
+  const kwRule = fixedH1
+    ? `Keep the H1 exactly as "${fixedH1}" — never rewrite it; the primary keyword belongs in the body (not forced into the H1), and each secondary keyword 1× in the body only.`
+    : `keep total keyword mentions at exactly ${2 + secStrings.length} (PK 1× in H1 + 1× in body; each secondary 1× in body only).`;
+  return `The draft violates the SEO Checklist v2. Fix every item below, then output the COMPLETE rewritten blog in Markdown.\n\n${sections.join('\n\n')}\n\nConstraints while fixing: ${kwRule} Never place a keyword in a subheading or as link anchor text. Weave external links invisibly into the prose — no source-attribution phrasing ("According to…", "In a study by…", "As noted by…"), and the anchor text must be words already natural to the sentence, never a publication or organization name. Use natural synonyms for any replacement — never reuse another keyword from the list. Keep em-dashes spaced ( — ), separate every paragraph and bullet with a blank line, and do not exceed the parent service page's word count.`;
 }

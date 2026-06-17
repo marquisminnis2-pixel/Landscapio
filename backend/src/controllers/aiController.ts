@@ -662,7 +662,7 @@ export const autoWriteBlogs = async (req: AuthRequest, res: Response) => {
           .filter((s): s is string => !!s && s.trim().length > 0);
 
         for (let attempt = 1; attempt <= MAX_REWRITE_ATTEMPTS; attempt++) {
-          const rewritePrompt = buildSeoRewritePrompt(blogContent, pk, secondaries, brandSiteUrl);
+          const rewritePrompt = buildSeoRewritePrompt(blogContent, pk, secondaries, brandSiteUrl, fields['Blog Title (Topic)'] || undefined);
           if (!rewritePrompt) break;
           blogContent = await callClaude(
             systemPrompt,
