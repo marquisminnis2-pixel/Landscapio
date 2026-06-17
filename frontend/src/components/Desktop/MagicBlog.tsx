@@ -78,6 +78,20 @@ function parseLinksFromText(text: string): Array<{ href: string; text: string }>
   return links;
 }
 
+// Deterministic H1 lock: force the first markdown H1 (`# ...`) to exactly `h1`.
+// Used in the tracker flow so the blog's H1 always equals the Airtable title,
+// regardless of what the model generated. Inserts an H1 if none is present.
+function forceMarkdownH1(text: string, h1: string): string {
+  if (/^#\s+.+/m.test(text)) {
+    let replaced = false;
+    return text.split('\n').map((line) => {
+      if (!replaced && /^#\s+/.test(line)) { replaced = true; return `# ${h1}`; }
+      return line;
+    }).join('\n');
+  }
+  return `# ${h1}\n\n${text}`;
+}
+
 interface SecondaryKeyword { id: number; keyword: string; }
 interface KeywordConflictResult {
   primaryConflict: { title: string; keyword: string } | null;
@@ -915,6 +929,16 @@ META_DESCRIPTION: [description here]`;
         fullText = await streamOnce(fixHistory, true);
         currentHistory = [...fixHistory, { role: 'assistant' as const, content: fullText }];
       } catch { break; }
+    }
+
+    // Deterministic guarantee: in the tracker flow the H1 must equal the Airtable
+    // blog title verbatim, no matter what the model produced or the rewrite passes did.
+    if (fixedH1Ref.current && fullText && !fullText.startsWith('Error:')) {
+      fullText = forceMarkdownH1(fullText, fixedH1Ref.current);
+      const last = currentHistory[currentHistory.length - 1];
+      if (last && last.role === 'assistant') {
+        currentHistory = [...currentHistory.slice(0, -1), { role: 'assistant', content: fullText }];
+      }
     }
 
     setIsOptimizing(false);
