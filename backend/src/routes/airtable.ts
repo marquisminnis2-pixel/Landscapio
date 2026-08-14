@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { logBlogToAirtable } from '../services/airtableService';
 import { fetchBlogs, markInProgress, updateBlogRecord } from '../services/blogTrackerService';
+import { extractMetaPreamble } from '../utils/seoChecklist';
 import {
   fetchSocialPosts,
   updateSocialPostRecord,
@@ -68,9 +69,23 @@ router.post('/update-blog', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'recordId and status are required' });
     }
     const fields: Record<string, string> = { 'Blog Status': status };
-    if (blogContent) fields['Blog Copy'] = blogContent;
-    if (metaTitle) fields['Meta Title'] = metaTitle;
-    if (metaDescription) fields['Meta Description'] = metaDescription;
+    // The draft carries "Meta Title:" / "Meta Description:" lines above the H1
+    // because the generation prompt asks for them. They belong in the dedicated
+    // columns below, not in the body, so strip them before the copy is stored.
+    const meta = extractMetaPreamble(blogContent || '');
+    if (blogContent) fields['Blog Copy'] = meta.content;
+    // generateMeta (frontend) normally supplies these. When it failed or was never
+    // run, the values recovered from the preamble are better than writing nothing.
+    const finalMetaTitle = metaTitle || meta.metaTitle;
+    const finalMetaDescription = metaDescription || meta.metaDescription;
+    if (!metaTitle && meta.metaTitle) {
+      console.warn(`[airtable:update-blog] metaTitle missing for record ${recordId} — recovered from draft preamble`);
+    }
+    if (!metaDescription && meta.metaDescription) {
+      console.warn(`[airtable:update-blog] metaDescription missing for record ${recordId} — recovered from draft preamble`);
+    }
+    if (finalMetaTitle) fields['Meta Title'] = finalMetaTitle;
+    if (finalMetaDescription) fields['Meta Description'] = finalMetaDescription;
     const result = await updateBlogRecord(clientId, recordId, fields);
     res.json({ success: true, result });
   } catch (error: any) {

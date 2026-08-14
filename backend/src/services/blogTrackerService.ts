@@ -1,4 +1,5 @@
 import { getClientAirtableConfig, isAirtableConfigured, ClientAirtableConfig } from './airtableConfig';
+import { stripMetaPreamble } from '../utils/seoChecklist';
 
 function baseUrl(cfg: ClientAirtableConfig) {
   return `https://api.airtable.com/v0/${cfg.baseId}/${encodeURIComponent(cfg.blogTrackerTable)}`;
@@ -115,5 +116,13 @@ export async function markInProgress(clientId: string, recordId: string) {
 export async function updateBlogRecord(clientId: string, recordId: string, fields: Record<string, string>) {
   const cfg = await getClientAirtableConfig(clientId);
   if (!isAirtableConfigured(cfg)) throw configError(cfg, clientId);
-  return patchRecord(cfg, recordId, fields, 'update-blog');
+  // Backstop: every write of "Blog Copy" funnels through here, so stripping the
+  // meta preamble at this point means no caller can leak it by forgetting to.
+  // The /update-blog route strips earlier (it also recovers the values into the
+  // Meta Title / Meta Description columns); this is idempotent on that input, and
+  // it is the only guard on the auto-write path in aiController.
+  const safeFields = fields['Blog Copy']
+    ? { ...fields, 'Blog Copy': stripMetaPreamble(fields['Blog Copy']) }
+    : fields;
+  return patchRecord(cfg, recordId, safeFields, 'update-blog');
 }

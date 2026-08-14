@@ -1,4 +1,5 @@
 import { getClientAirtableConfig, isAirtableConfigured } from './airtableConfig';
+import { extractMetaPreamble } from '../utils/seoChecklist';
 
 interface BlogAirtablePayload {
   clientId: string;
@@ -40,9 +41,14 @@ export async function logBlogToAirtable(payload: BlogAirtablePayload) {
 
   const url = `https://api.airtable.com/v0/${cfg.baseId}/${encodeURIComponent(cfg.blogTrackerTable)}`;
 
+  // Same treatment as the tracker path: the generation prompt puts "Meta Title:" /
+  // "Meta Description:" above the H1, and those lines are not body copy — they get
+  // their own columns below.
+  const meta = extractMetaPreamble(payload.blogContent || '');
+
   const fields: Record<string, string> = {
     'Blog Title (Topic)': payload.blogTitle || '',
-    'Blog Copy': payload.blogContent || '',
+    'Blog Copy': meta.content,
     'Blog Status': payload.status || 'Created',
   };
   if (payload.blogUrl) fields['Blog URL'] = payload.blogUrl;
@@ -61,8 +67,11 @@ export async function logBlogToAirtable(payload: BlogAirtablePayload) {
   if (payload.externalLink2) fields['External Link 2'] = payload.externalLink2;
   if (payload.blogOutlineStatus) fields['Blog Outline Status'] = payload.blogOutlineStatus;
   if (payload.blogOutline) fields['Blog Outline'] = payload.blogOutline;
-  if (payload.metaTitle) fields['Meta Title'] = payload.metaTitle;
-  if (payload.metaDescription) fields['Meta Description'] = payload.metaDescription;
+  // Prefer the explicitly generated meta; fall back to what the preamble said.
+  const metaTitle = payload.metaTitle || meta.metaTitle;
+  const metaDescription = payload.metaDescription || meta.metaDescription;
+  if (metaTitle) fields['Meta Title'] = metaTitle;
+  if (metaDescription) fields['Meta Description'] = metaDescription;
   if (payload.notes) fields['Notes'] = payload.notes;
 
   const response = await fetch(url, {

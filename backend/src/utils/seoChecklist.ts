@@ -40,6 +40,73 @@ export function seoVisibleText(md: string): string {
 export function seoStripMeta(text: string): string {
   return (text || '').split('\n').filter(l => !/^\s*meta\s*(title|description)\s*[:\-]/i.test(l)).join('\n');
 }
+
+// ─── Meta preamble extraction (write-path) ────────────────────────────────────
+// The blog generation prompt (MagicBlog.tsx buildBlogKeywordsContext, "META —
+// output these two labelled lines at the very top, before the H1") asks the model
+// to emit "Meta Title:" / "Meta Description:" above the H1. Those lines are
+// instructions for the publisher, not body copy — the Blog Tracker already has
+// dedicated "Meta Title" / "Meta Description" columns — but nothing stripped them,
+// so they shipped inside "Blog Copy" and render as visible paragraphs above the
+// title on the published post.
+//
+// Distinct from seoStripMeta above, which stays as-is: that one runs on
+// seoSplitSections().body during keyword counting, where headings are already
+// gone, and it must keep matching anywhere in its input. This one runs on the
+// WRITE path against the full draft, so it is scoped to the PREAMBLE — everything
+// before the first markdown heading. These are SEO blogs, so "meta description:"
+// can legitimately appear in body prose as an example; nothing after the first
+// heading is ever touched.
+//
+// Tolerates the wrapping the model varies on: "**Meta Title:** x", "Meta_Title: x",
+// "meta title - x", and surrounding quotes on the value.
+const META_LINE = /^\s*\*{0,2}\s*meta[\s_-]*(title|description)\s*\*{0,2}\s*[:\-]\s*(.*)$/i;
+const FIRST_HEADING = /^\s{0,3}#{1,6}[^\S\n]/;
+
+function unwrapMetaValue(s: string): string {
+  return (s || '').replace(/^[\s*_"'“”]+|[\s*_"'“”]+$/g, '').trim();
+}
+
+export interface MetaPreamble {
+  /** The draft with the preamble's meta lines removed. */
+  content: string;
+  /** Value from the "Meta Title:" line, or '' when the draft had none. */
+  metaTitle: string;
+  /** Value from the "Meta Description:" line, or '' when the draft had none. */
+  metaDescription: string;
+}
+
+// Removes the preamble meta lines AND hands back what they said, so callers can
+// fall back to them when the separate generateMeta call produced nothing.
+export function extractMetaPreamble(md: string): MetaPreamble {
+  const lines = (md || '').split('\n');
+  const kept: string[] = [];
+  let metaTitle = '';
+  let metaDescription = '';
+  let i = 0;
+  for (; i < lines.length; i++) {
+    if (FIRST_HEADING.test(lines[i])) break; // first heading ends the preamble
+    const m = lines[i].match(META_LINE);
+    if (!m) {
+      kept.push(lines[i]);
+      continue;
+    }
+    const value = unwrapMetaValue(m[2]);
+    // First occurrence wins — a repeated label is the model echoing itself.
+    if (/title/i.test(m[1])) {
+      if (!metaTitle) metaTitle = value;
+    } else if (!metaDescription) {
+      metaDescription = value;
+    }
+  }
+  // Removing the leading lines can leave the draft starting on blank lines.
+  const content = kept.concat(lines.slice(i)).join('\n').replace(/^\s*\n+/, '');
+  return { content, metaTitle, metaDescription };
+}
+
+export function stripMetaPreamble(md: string): string {
+  return extractMetaPreamble(md).content;
+}
 export function seoExtractAnchors(md: string): { text: string; url: string }[] {
   const out: { text: string; url: string }[] = [];
   const re = /\[([^\]]+)\]\(([^)]+)\)/g;
