@@ -4,6 +4,13 @@ import { fetchBlogs, markInProgress, updateBlogRecord } from '../services/blogTr
 import Client, { IClient } from '../models/Client';
 import BlogPost from '../models/BlogPost';
 import { seoNormalize, buildSeoRewritePrompt, brandSiteUrl } from '../utils/seoChecklist';
+import {
+  DEFAULT_RULES,
+  BRAND_DEFAULT_RULES,
+  resolveOutlineRules,
+  renderStructureBlock,
+  renderCta,
+} from '../utils/blogOutlineRules';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -234,13 +241,17 @@ const LANDSCAPIO_CONTEXT: BlogBrandContext = {
 
 // Used for agency/generic clients — writes blogs for their actual landscaping business,
 // not for the Landscapio platform itself.
-function buildGenericClientSystemPrompt(client: IClient | null): string {
+function buildGenericClientSystemPrompt(client: IClient | null, outlineType?: string): string {
   const businessName = client?.businessName || 'the business';
   const industry = (client?.industry || 'landscaping').toLowerCase();
   const rawUrl = client?.websiteUrl || '';
   const siteUrl = rawUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '');
   const brandVoiceNote = client?.brandVoice ? `\n- Brand voice: ${client.brandVoice}` : '';
   const audience = client?.targetAudience || `homeowners and property managers looking for ${industry} services`;
+  // Structural shape for this post. Unknown/absent → DEFAULT_RULES, which reproduces
+  // the original hardcoded prompt byte-for-byte (see utils/blogOutlineRules).
+  const rules = resolveOutlineRules(outlineType, DEFAULT_RULES);
+  const midCtaExample = `"Ready to work with ${businessName}? Contact us today for a free estimate."`;
 
   return `You are an expert SEO content writer for ${businessName}${siteUrl ? ` (${siteUrl})` : ''}, a ${industry} company. Your job is to write blog articles that rank on Google and convert readers into customers.
 
@@ -252,21 +263,19 @@ WRITING RULES (validated against 93% Semrush score):
 - Target audience: ${audience}
 - Use H2 headings that describe real customer needs, not clever titles
 - Use H3 subheadings under each H2 to break up longer sections
-- Write in full paragraphs — bullets only for genuine lists (3+ items)
+${rules.proseCheck}
 - End every article with a closing H2 section that restates the primary keyword naturally and includes a clear CTA. Never use "Conclusion" as the heading — vary it each time (e.g. "Final Thoughts", "The Bottom Line", "Where to Go From Here", "Ready to Get Started?")
 
 STRUCTURE EVERY ARTICLE LIKE THIS:
-1. Opening paragraph — hook with the reader's problem, mention the primary keyword in the first 100 words
-2. H2 sections (follow the outline in the brief exactly if provided)
-3. Closing H2 section (not "Conclusion") with keyword restatement + CTA
+${renderStructureBlock(rules)}
 
 SEO RULES:
 - Use the primary keyword and each secondary keyword the number of times specified in the brief's KEYWORDS TO USE section. Stay within the stated range. Place the primary keyword once in the opening paragraph (first 100 words of body text) and spread the rest evenly through the body.
 - The primary keyword must appear more times than any single secondary keyword.
 - Natural placement only — never force keywords into sentences.
 - Do not cluster repeated keywords in the same paragraph — distribute them across the post.
-- NEVER place the primary keyword or any secondary keyword inside an H1 or H2 heading. Keywords belong in paragraph body text only — placing them in headings causes keyword cannibalization and destabilizes rankings.
-- The primary keyword and the listed secondary keywords are the ONLY phrases allowed to repeat. Every other named entity may appear at most once across the entire article. Do not introduce any new repeated phrases of your own.
+${rules.headingCheck}
+${rules.entityCheck}
 - Write at a 7th–8th grade reading level. Use short sentences (15 words max on average). Avoid jargon. Talk directly to the reader using "you" and "your". No corporate or academic phrasing.
 - Target word count is in the brief — hit within 10%
 
@@ -279,12 +288,11 @@ ENHANCEMENT CHECKLIST (every article MUST pass all of these):
 - Include at least 1 ${businessName} brand mention (e.g. "At ${businessName}, we..." or "${businessName} specializes in...")
 - Include at least 1 real-world scenario or case study relevant to the ${industry} industry
 - Include at least 1 tactical opinion or hot take — share a strong, specific point of view that sets the article apart from generic content
-- Include a mid-article CTA (e.g. "Ready to work with ${businessName}? Contact us today for a free estimate.") placed naturally after the 2nd or 3rd H2 section
-- Include an end-article CTA in the closing section
+${renderCta(rules, midCtaExample)}
 
 OUTPUT FORMAT:
 Return clean markdown with # for H1, ## for H2, ### for H3.
-Do not include meta descriptions unless asked.
+${rules.outputCheck}
 Do NOT wrap keywords in markdown bold (\`**\`) or italic (\`*\`). Keywords must appear as plain prose — never visually emphasized. The brief uses \`**\` for its own headings, but that styling must not appear in your article body around the keyword phrases.
 Use markdown bold (\`**word**\`) only sparingly for genuine emphasis on important non-keyword phrases.
 Always format links as proper markdown: \`[anchor text](url)\` — never as bare URLs.
@@ -292,13 +300,16 @@ Always format links as proper markdown: \`[anchor text](url)\` — never as bare
 When the user wants to tweak, regenerate, or adjust — do so immediately without asking unnecessary questions.`;
 }
 
-function buildBlogSystemPrompt(client: IClient | null): string {
+function buildBlogSystemPrompt(client: IClient | null, outlineType?: string): string {
   // Known client → write for their specific landscaping business
-  if (client) return buildGenericClientSystemPrompt(client);
+  if (client) return buildGenericClientSystemPrompt(client, outlineType);
 
   // No client → write for Landscapio brand itself (publisher = 'landscapio')
   const ctx = LANDSCAPIO_CONTEXT;
   const topicBlock = ctx.topicLines.map(l => `- ${l}`).join('\n');
+  // This branch scopes its entity rule to the topic block it prints, so it starts
+  // from BRAND_DEFAULT_RULES rather than DEFAULT_RULES.
+  const rules = resolveOutlineRules(outlineType, BRAND_DEFAULT_RULES);
   return `You are an expert SEO content writer for ${ctx.brandName} (${ctx.siteUrl}), ${ctx.domainSentence}. Your job is to write blog articles that rank on Google and convert readers into customers.
 
 BEFORE writing, you will receive a content brief. Follow it precisely.
@@ -308,24 +319,22 @@ WRITING RULES (validated against 93% Semrush score):
 - Write in a confident, helpful tone — like an expert ${ctx.advisorRole} giving real advice
 - Use H2 headings that describe real homeowner needs, not clever titles
 - Use H3 subheadings under each H2 to break up longer sections
-- Write in full paragraphs — bullets only for genuine lists (3+ items)
+${rules.proseCheck}
 - End every article with a closing H2 section that restates the primary keyword naturally and includes a clear CTA. Never use "Conclusion" as the heading — vary it each time (e.g. "Final Thoughts", "What This Means for Your Yard", "The Bottom Line", "Where to Go From Here")
 
 ${ctx.topicHeader}:
 ${topicBlock}
 
 STRUCTURE EVERY ARTICLE LIKE THIS:
-1. Opening paragraph — hook with the reader's problem, mention the primary keyword in the first 100 words
-2. H2 sections (follow the outline in the brief exactly if provided)
-3. Closing H2 section (not "Conclusion") with keyword restatement + CTA
+${renderStructureBlock(rules)}
 
 SEO RULES:
 - Use the primary keyword and each secondary keyword the number of times specified in the brief's KEYWORDS TO USE section. Stay within the stated range. Place the primary keyword once in the opening paragraph (first 100 words of body text) and spread the rest evenly through the body.
 - The primary keyword must appear more times than any single secondary keyword.
 - Natural placement only — never force keywords into sentences.
 - Do not cluster repeated keywords in the same paragraph — distribute them across the post.
-- NEVER place the primary keyword or any secondary keyword inside an H1 or H2 heading. Keywords belong in paragraph body text only — placing them in headings causes keyword cannibalization and destabilizes rankings.
-- The primary keyword and the listed secondary keywords are the ONLY phrases allowed to repeat. Every other named entity from the topic block above may appear **at most once** across the entire article. Do not introduce any new repeated phrases of your own.
+${rules.headingCheck}
+${rules.entityCheck}
 - Write at a **7th–8th grade reading level**. Use **short sentences** (15 words max on average). Avoid jargon. Talk directly to the reader using "you" and "your". No corporate or academic phrasing.
 - Target word count is in the brief — hit within 10%
 
@@ -338,18 +347,20 @@ ENHANCEMENT CHECKLIST (every article MUST pass all of these):
 - Include at least 1 ${ctx.brandName} brand mention (e.g. ${ctx.brandMentionExample})
 - Include at least 1 real-world scenario or case study (e.g. ${ctx.caseStudyExample})
 - Include at least 1 tactical opinion or hot take — share a strong, specific point of view that sets the article apart from generic content
-- Include a mid-article CTA (e.g. ${ctx.midCtaExample}) placed naturally after the 2nd or 3rd H2 section
-- Include an end-article CTA in the closing section
+${renderCta(rules, ctx.midCtaExample)}
 
 OUTPUT FORMAT:
 Return clean markdown with # for H1, ## for H2, ### for H3.
-Do not include meta descriptions unless asked.
+${rules.outputCheck}
 Do NOT wrap keywords in markdown bold (\`**\`) or italic (\`*\`). Keywords must appear as plain prose — never visually emphasized. The brief uses \`**\` for its own headings, but that styling must not appear in your article body around the keyword phrases.
 Use markdown bold (\`**word**\`) only sparingly for genuine emphasis on important non-keyword phrases.
 Always format links as proper markdown: \`[anchor text](url)\` — never as bare URLs.
 
 When the user wants to tweak, regenerate, or adjust — do so immediately without asking unnecessary questions.`;
 }
+
+/** Test-only handle on the blog prompt builder (__tests__/blogSystemPrompt.test.ts). */
+export const __buildBlogSystemPromptForTest = buildBlogSystemPrompt;
 
 async function resolveBlogClient(clientId?: string, orgId?: string): Promise<IClient | null> {
   if (!clientId || !orgId) return null;
