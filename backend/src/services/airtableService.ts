@@ -1,5 +1,6 @@
 import { getClientAirtableConfig, isAirtableConfigured } from './airtableConfig';
 import { extractMetaPreamble } from '../utils/seoChecklist';
+import { isOutlineType } from '../utils/blogOutlineRules';
 
 interface BlogAirtablePayload {
   clientId: string;
@@ -21,6 +22,8 @@ interface BlogAirtablePayload {
   externalLink2?: string;
   blogOutlineStatus?: string;
   blogOutline?: string;
+  /** One of OUTLINE_TYPES (utils/blogOutlineRules) — the shape the copy was written to. */
+  blogOutlineType?: string;
   metaTitle?: string;
   metaDescription?: string;
   notes?: string;
@@ -67,6 +70,9 @@ export async function logBlogToAirtable(payload: BlogAirtablePayload) {
   if (payload.externalLink2) fields['External Link 2'] = payload.externalLink2;
   if (payload.blogOutlineStatus) fields['Blog Outline Status'] = payload.blogOutlineStatus;
   if (payload.blogOutline) fields['Blog Outline'] = payload.blogOutline;
+  // Same rule as the tracker path: only a real template name is recorded, since an
+  // unknown value produced the default shape rather than the one it names.
+  if (isOutlineType(payload.blogOutlineType)) fields['Blog Outline Type'] = payload.blogOutlineType;
   // Prefer the explicitly generated meta; fall back to what the preamble said.
   const metaTitle = payload.metaTitle || meta.metaTitle;
   const metaDescription = payload.metaDescription || meta.metaDescription;

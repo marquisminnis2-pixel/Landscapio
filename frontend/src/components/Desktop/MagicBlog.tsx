@@ -21,7 +21,24 @@ interface AirtableBlogRecord {
     'Blog Status'?: string;
     'Blog Outline'?: string;
     'Blog Outline Status'?: string;
+    'Blog Outline Type'?: string;
   };
+}
+
+// Structural shape names come from the backend (GET /api/ai/blog/outline-types),
+// which reads them off OUTLINE_RULES — the same table the prompt builder uses. They
+// are deliberately not restated here: a hardcoded copy would silently drift the
+// moment a shape is added or renamed. Empty selection = no specific structure, which
+// is the pre-picker behaviour (DEFAULT_RULES).
+const NO_OUTLINE_TYPE = '';
+
+/** "COST_BREAKDOWN" → "Cost Breakdown" — display only, derived, never a second list. */
+function outlineTypeLabel(name: string): string {
+  return name
+    .toLowerCase()
+    .split('_')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
 }
 
 const TONES = ['Professional', 'Casual & Friendly', 'SEO-Optimised', 'Storytelling', 'Thought Leadership'];
@@ -421,6 +438,21 @@ const MagicBlog = () => {
   const [audience, setAudience] = useState('');
   const [searchIntent, setSearchIntent] = useState('Informational');
   const [h2Outline, setH2Outline] = useState('');
+  // ── Outline type (structural shape) ─────────────────────────────────────────
+  const [outlineType, setOutlineType] = useState<string>(NO_OUTLINE_TYPE);
+  const [outlineTypes, setOutlineTypes] = useState<string[]>([]);
+
+  // Load the shape list once. On failure the picker is left with only the blank
+  // option, which is exactly the behaviour that existed before it was added.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch(`${API_BASE}/api/ai/blog/outline-types`);
+        const data = await res.json();
+        if (data.success && Array.isArray(data.outlineTypes)) setOutlineTypes(data.outlineTypes);
+      } catch { /* picker degrades to "no specific structure" only */ }
+    })();
+  }, []);
   const [isSaving, setIsSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle');
   const [airtableStatus, setAirtableStatus] = useState<'idle' | 'logging' | 'logged' | 'failed'>('idle');
@@ -558,6 +590,9 @@ const MagicBlog = () => {
 
   const selectTrackerBlog = async (record: AirtableBlogRecord) => {
     setSelectedTracker(record);
+    // Show the row's own shape pre-selected. A blank column clears the picker so the
+    // previous row's choice doesn't silently carry over onto this one.
+    setOutlineType(record.fields['Blog Outline Type'] || NO_OUTLINE_TYPE);
     // Only mark as In Progress if currently "Not Started"
     const status = record.fields['Blog Status'];
     if (!status || status === 'Not Started') {
@@ -666,6 +701,7 @@ const MagicBlog = () => {
           blogContent: lastAssistantMsg.content,
           metaTitle: metaTitle || undefined,
           metaDescription: metaDescription || undefined,
+          outlineType: outlineType || undefined,
           status,
         }),
       });
@@ -695,6 +731,10 @@ const MagicBlog = () => {
   const externalLinksRef = useRef(externalLinks);
   // Locked H1 for the tracker flow (writeSelectedBlog) — undefined in the manual flow.
   const fixedH1Ref = useRef<string | undefined>(undefined);
+  // streamOnce is a []-dep callback, so the picked shape reaches it through a ref
+  // rather than a closure over state (same reason fixedH1Ref exists).
+  const outlineTypeRef = useRef(outlineType);
+  useEffect(() => { outlineTypeRef.current = outlineType; }, [outlineType]);
   useEffect(() => { primaryKeywordRef.current = primaryKeyword; }, [primaryKeyword]);
   useEffect(() => { secondaryKeywordsRef.current = secondaryKeywords; }, [secondaryKeywords]);
   useEffect(() => { internalLinksRef.current = internalLinks; }, [internalLinks]);
@@ -729,7 +769,12 @@ const MagicBlog = () => {
     const res = await fetch(`${API_BASE}/api/ai/blog/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ messages: history }),
+      // outlineType is omitted entirely when nothing is picked, so the server sees
+      // the same body it saw before the picker existed and builds the same prompt.
+      body: JSON.stringify({
+        messages: history,
+        ...(outlineTypeRef.current ? { outlineType: outlineTypeRef.current } : {}),
+      }),
     });
     if (!res.ok || !res.body) throw new Error(`Server error: ${res.status}`);
     const reader = res.body.getReader();
@@ -1041,6 +1086,7 @@ META_DESCRIPTION: [description here]`;
           externalLink2: externalLinks[1]?.url,
           metaTitle: metaTitle || undefined,
           metaDescription: metaDescription || undefined,
+          blogOutlineType: outlineType || undefined,
           status: 'Created',
         }),
       });
@@ -1253,6 +1299,16 @@ META_DESCRIPTION: [description here]`;
                   <button key={si} className={`tone-btn${searchIntent === si ? ' active' : ''}`} onClick={() => setSearchIntent(si)}>{si}</button>
                 ))}
               </div>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <label className="form-label">Outline Type <span style={{ color: 'rgba(255,255,255,0.25)', textTransform: 'none', letterSpacing: 0, fontWeight: 400 }}>(optional — post structure)</span></label>
+              <select className="form-input" value={outlineType} onChange={(e) => setOutlineType(e.target.value)}>
+                <option value={NO_OUTLINE_TYPE}>No specific structure</option>
+                {outlineTypes.map((ot) => (
+                  <option key={ot} value={ot}>{outlineTypeLabel(ot)}</option>
+                ))}
+              </select>
             </div>
 
             <div style={{ marginBottom: 16 }}>
@@ -1560,6 +1616,20 @@ META_DESCRIPTION: [description here]`;
                         </div>
                       );
                     })}
+                  </div>
+                )}
+
+                {/* Shape picker at the tracker trigger — same state as the sidebar
+                    control, repeated here because this is where the row is chosen. */}
+                {selectedTracker && (
+                  <div style={{ marginTop: 12 }}>
+                    <label className="form-label" style={{ marginBottom: 4 }}>Outline Type</label>
+                    <select className="form-input" value={outlineType} onChange={(e) => setOutlineType(e.target.value)}>
+                      <option value={NO_OUTLINE_TYPE}>No specific structure</option>
+                      {outlineTypes.map((ot) => (
+                        <option key={ot} value={ot}>{outlineTypeLabel(ot)}</option>
+                      ))}
+                    </select>
                   </div>
                 )}
 

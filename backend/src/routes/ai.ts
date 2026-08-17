@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { chat, blogChat, postsChat, contentChat, pagesGenerate, autoWriteBlogs, checkKeywordConflicts } from '../controllers/aiController';
+import { chat, blogChat, postsChat, contentChat, pagesGenerate, autoWriteBlogs, checkKeywordConflicts, listOutlineTypes } from '../controllers/aiController';
 import { authMiddleware } from '../middleware/auth';
 
 const router = Router();
@@ -12,6 +12,9 @@ router.post('/blog/chat', authMiddleware, blogChat);
 router.post('/posts/chat', authMiddleware, postsChat);
 router.post('/content/chat', authMiddleware, contentChat);
 router.post('/pages/generate', authMiddleware, pagesGenerate);
+
+// Structural shapes the Magic Blog outline picker offers (source of truth)
+router.get('/blog/outline-types', authMiddleware, listOutlineTypes);
 
 // Cross-blog keyword deduplication guard (anti-cannibalization)
 router.post('/blog/check-keyword-conflicts', authMiddleware, checkKeywordConflicts);

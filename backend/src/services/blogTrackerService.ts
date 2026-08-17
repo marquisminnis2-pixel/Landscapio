@@ -37,6 +37,10 @@ export async function fetchBlogs(clientId: string, status?: string) {
     'External Link 2',
     'Blog Outline Status',
     'Blog Outline',
+    // Single-select naming one of the OUTLINE_TYPES shapes (utils/blogOutlineRules).
+    // Blank on rows written before the picker existed — an absent value means
+    // "no specific structure" and resolves to DEFAULT_RULES.
+    'Blog Outline Type',
     'Blog Copy',
     'Meta Title',
     'Meta Description',

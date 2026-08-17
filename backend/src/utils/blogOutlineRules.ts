@@ -329,6 +329,17 @@ export const OUTLINE_RULES: Record<string, BlogOutlineRules> = {
   },
 };
 
+/**
+ * Every authored shape name, in declaration order. This is the single source of
+ * truth for the picker in Magic Blog: the frontend reads it over
+ * `GET /api/ai/blog/outline-types` rather than restating the list, so a shape added
+ * or removed above can never drift out of sync with the UI.
+ *
+ * The values double as the option names on the Airtable "Blog Outline Type"
+ * single-select column, so they must stay exactly as spelled here.
+ */
+export const OUTLINE_TYPES: string[] = Object.keys(OUTLINE_RULES);
+
 export function isOutlineType(v?: string): v is string {
   return typeof v === 'string' && Object.prototype.hasOwnProperty.call(OUTLINE_RULES, v);
 }

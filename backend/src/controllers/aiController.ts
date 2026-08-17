@@ -7,6 +7,8 @@ import { seoNormalize, buildSeoRewritePrompt, brandSiteUrl } from '../utils/seoC
 import {
   DEFAULT_RULES,
   BRAND_DEFAULT_RULES,
+  OUTLINE_TYPES,
+  isOutlineType,
   resolveOutlineRules,
   renderStructureBlock,
   renderCta,
@@ -371,13 +373,24 @@ async function resolveBlogClient(clientId?: string, orgId?: string): Promise<ICl
   }
 }
 
+/**
+ * The shape names the Magic Blog picker offers. Served rather than duplicated in the
+ * frontend so the picker can never list a shape the prompt builder doesn't know.
+ */
+export const listOutlineTypes = async (_req: AuthRequest, res: Response) => {
+  res.json({ success: true, outlineTypes: OUTLINE_TYPES });
+};
+
 // ─── Magic Blog Chat (Landscaping SEO Blog Writing) ─────────────────────────
 export const blogChat = async (req: AuthRequest, res: Response) => {
-  const { messages, clientId, orgId: bodyOrgId } = req.body;
+  const { messages, clientId, orgId: bodyOrgId, outlineType } = req.body;
   if (!messages || !Array.isArray(messages)) return res.status(400).json({ message: 'messages array is required' });
   if (!process.env.CLAUDE_API_KEY) return res.status(500).json({ message: 'AI service not configured' });
   const client = await resolveBlogClient(clientId, req.orgId || bodyOrgId);
-  await streamClaude(buildBlogSystemPrompt(client), messages, res);
+  // An absent or unrecognised outlineType resolves to the default shape inside the
+  // builder, so no validation is needed here — passing it straight through keeps the
+  // blank-selection path byte-identical to the pre-wiring prompt.
+  await streamClaude(buildBlogSystemPrompt(client, outlineType), messages, res);
 };
 
 // ─── Magic Posts Chat ─────────────────────────────────────────────────────────
@@ -627,6 +640,9 @@ export const autoWriteBlogs = async (req: AuthRequest, res: Response) => {
   // /api/ai routes don't run resolveOrg, so req.orgId is usually unset — accept
   // an optional orgId from the body as a fallback (mirrors blogChat).
   const orgId = req.orgId || req.body?.orgId;
+  // Batch-wide fallback shape. A row that names its own "Blog Outline Type" wins
+  // over this, so one run can still produce a different structure per row.
+  const batchOutlineType: string | undefined = req.body?.outlineType;
   if (!clientId) {
     return res.status(400).json({ success: false, message: 'clientId is required' });
   }
@@ -650,15 +666,19 @@ export const autoWriteBlogs = async (req: AuthRequest, res: Response) => {
     // Resolve the client once and use the unified blog system prompt (same one
     // blogChat uses). Falls back to the Landscapio brand prompt when unresolved.
     const client = await resolveBlogClient(clientId, orgId);
-    const systemPrompt = buildBlogSystemPrompt(client);
 
     console.log(`🤖 Auto-write started: ${blogs.length} blogs to process`);
 
     for (const blog of blogs) {
       const fields = blog.fields;
       const title = fields['Blog Title (Topic)'] || 'Untitled';
+      // Per-row shape first, batch default second. Built inside the loop rather than
+      // once above so rows with different shapes get different prompts; with neither
+      // set this is the same prompt the batch used before the picker existed.
+      const rowOutlineType: string | undefined = fields['Blog Outline Type'] || batchOutlineType;
+      const systemPrompt = buildBlogSystemPrompt(client, rowOutlineType);
       try {
-        console.log(`📝 Writing: "${title}"`);
+        console.log(`📝 Writing: "${title}"${isOutlineType(rowOutlineType) ? ` [${rowOutlineType}]` : ''}`);
 
         await markInProgress(clientId, blog.id);
 
@@ -684,6 +704,10 @@ export const autoWriteBlogs = async (req: AuthRequest, res: Response) => {
         await updateBlogRecord(clientId, blog.id, {
           'Blog Copy': blogContent,
           'Blog Status': 'Created',
+          // Record the shape the copy was actually written to. Only when it names a
+          // real template — an unknown value fell through to the default shape, so
+          // stamping it on the row would misreport what the prompt did.
+          ...(isOutlineType(rowOutlineType) ? { 'Blog Outline Type': rowOutlineType } : {}),
         });
 
         console.log(`✅ Done: "${title}"`);

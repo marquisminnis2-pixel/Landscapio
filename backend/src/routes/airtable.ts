@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { logBlogToAirtable } from '../services/airtableService';
 import { fetchBlogs, markInProgress, updateBlogRecord } from '../services/blogTrackerService';
 import { extractMetaPreamble } from '../utils/seoChecklist';
+import { isOutlineType } from '../utils/blogOutlineRules';
 import {
   fetchSocialPosts,
   updateSocialPostRecord,
@@ -62,7 +63,7 @@ router.post('/mark-progress', async (req: Request, res: Response) => {
 
 // Blog Tracker: update a row with blog content, meta, and status
 router.post('/update-blog', async (req: Request, res: Response) => {
-  const { clientId, recordId, blogContent, status, metaTitle, metaDescription } = req.body;
+  const { clientId, recordId, blogContent, status, metaTitle, metaDescription, outlineType } = req.body;
   try {
     if (!clientId) return res.status(400).json({ success: false, error: 'clientId is required' });
     if (!recordId || !status) {
@@ -86,6 +87,9 @@ router.post('/update-blog', async (req: Request, res: Response) => {
     }
     if (finalMetaTitle) fields['Meta Title'] = finalMetaTitle;
     if (finalMetaDescription) fields['Meta Description'] = finalMetaDescription;
+    // Structural shape the copy was generated to, alongside the copy itself. Only a
+    // real template name is stored — anything else fell through to the default shape.
+    if (isOutlineType(outlineType)) fields['Blog Outline Type'] = outlineType;
     const result = await updateBlogRecord(clientId, recordId, fields);
     res.json({ success: true, result });
   } catch (error: any) {
